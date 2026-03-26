@@ -351,6 +351,9 @@ Enhances edge definition and detail.
 - **Param:** `unsharp_amount` = 0.2–0.5
 - **Caution:** High amounts → halos/ringing
 
+**Implementation note:** In this project the unsharp mask is implemented by blurring the color image with a Gaussian (`cv2.GaussianBlur(..., sigmaX=1.0)`) and combining the original and blurred images with `cv2.addWeighted(color, 1.0 + unsharp_amount, blurred, -unsharp_amount, 0)` (effectively `color + unsharp_amount * (color - blurred)`). Adjust `unsharp_amount` and the Gaussian `sigmaX` to control strength and the spatial scale of sharpening.
+
+
 #### Kernel Sharpening
 - **Function:** `sharpen_image()`
 - **Kernel:**
@@ -359,6 +362,10 @@ Enhances edge definition and detail.
   [ -1   5  -1 ]
   [  0  -1   0 ]
   ```
+
+**Note:** The repository also includes the `sharpen_image()` function which applies the above 3×3 kernel (a direct convolutional boost similar to a Laplacian-style enhancement). This kernel-based sharpening is more localized and can appear more aggressive than the Gaussian unsharp mask; use it if you prefer a crisper, high-frequency boost, and prefer the Gaussian unsharp mask for smoother results with fewer artifacts.
+
+**Note:** The repo also includes a simple 3×3 kernel sharpening implementation (`sharpen_image()` in [restoration.py](restoration.py#L290-L296)). This is a direct convolutional kernel (more like a Laplacian-style boost) and produces a different, often more aggressive, effect than the Gaussian unsharp mask. Use the kernel for crisper, localized edge boost, or the Gaussian unsharp mask for smoother, less artifact-prone sharpening.
 
 ---
 

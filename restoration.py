@@ -317,7 +317,10 @@ def restore_image(img, sat_scale=1.25, nlm_h=10, median_k=5, clahe_clip=2.0,
         denoise = cv2.medianBlur(img, median_k)
 
     # Step 2: White balance using Gray-World
-    result = white_balance_grayworld(denoise)
+    # Blend white balance gently (keep some original warmth):
+    wb = white_balance_grayworld(denoise)
+    # Apply stronger white-balance blending (more correction, keep some warmth)
+    result = cv2.addWeighted(denoise, 0.4, wb, 0.6, 0)
 
     # Spot detection & inpainting (remove dust/specks) if present
     mask, have_spots = detect_spots_mask(result, thresh=spot_thresh, blur_size=spot_blur, min_frac=spot_min_frac)

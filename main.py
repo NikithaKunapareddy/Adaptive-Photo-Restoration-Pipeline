@@ -46,32 +46,32 @@ def process_all(input_dir, output_dir, display=True):
                 logging.warning('Skipping (cannot read): %s', fname)
                 continue
 
-            # Adaptive analysis (detect conditions). We'll produce a single 'mild' output.
+            # Adaptive analysis (detect conditions)
             _, info = analyze_and_restore(img)
 
+            # Tuned parameters for warm old photo restoration
             mild_params = dict(
                 nlm_h=6,
                 median_k=3,
-                clahe_clip=1.2,
-                sat_scale_override=1.05,
-                unsharp_amount=0.2,
+                clahe_clip=1.1,
+                sat_scale_override=1.5,
+                unsharp_amount=0.3,
                 spot_thresh=50,
                 spot_blur=9,
                 spot_min_frac=1e-4,
                 inpaint_radius=2,
             )
 
-            mild_variant = restore_image(img, sat_scale=1.25, **mild_params)
+            mild_variant = restore_image(img, sat_scale=1.5, **mild_params)
             out_name = f'restored_{fname}'
             out_path = os.path.join(output_dir, out_name)
             cv2.imwrite(out_path, mild_variant)
             logging.info('Saved restored image (mild) to: %s', out_path)
 
-            # Recompute metrics comparing original and mild variant for accurate reporting
+            # Recompute metrics comparing original and mild variant
             try:
                 orig_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                 mild_gray = cv2.cvtColor(mild_variant, cv2.COLOR_BGR2GRAY)
-                # lazy import of helpers from restoration module
                 from restoration import mse, psnr, ssim
 
                 info['mse'] = mse(orig_gray, mild_gray)
@@ -90,23 +90,33 @@ def process_all(input_dir, output_dir, display=True):
             logging.info('Noise level: %.2f, Contrast score: %.2f', info.get('noise_level'), info.get('contrast_score'))
             logging.info('MSE: %.2f, PSNR: %.2f, SSIM: %.4f', info.get('mse'), info.get('psnr'), info.get('ssim'))
 
-            # Display original vs 'mild' restored for quick check (if requested)
+            # Display original vs restored side-by-side
             if display:
                 try:
-                    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-                    axes[0].imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-                    axes[0].set_title('Original Image')
-                    mild_img = cv2.imread(out_path)
-                    if mild_img is None:
-                        logging.warning('Mild preset not found for display: %s', out_path)
-                        axes[1].text(0.5, 0.5, 'Mild image missing', horizontalalignment='center', verticalalignment='center')
-                    else:
-                        axes[1].imshow(cv2.cvtColor(mild_img, cv2.COLOR_BGR2RGB))
-                    axes[1].set_title('Restored (Mild)')
-                    for ax in axes:
-                        ax.axis('off')
+                    fig, axes = plt.subplots(1, 2, figsize=(14, 7))
+
+                    orig_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    rest_rgb = cv2.cvtColor(mild_variant, cv2.COLOR_BGR2RGB)
+
+                    axes[0].imshow(orig_rgb)
+                    axes[0].set_title('Original Image', fontsize=14)
+                    axes[0].axis('off')
+
+                    axes[1].imshow(rest_rgb)
+                    axes[1].set_title('Restored (Mild)', fontsize=14)
+                    axes[1].axis('off')
+
+                    # Force both images to display at same scale
+                    axes[0].set_xlim(0, orig_rgb.shape[1])
+                    axes[0].set_ylim(orig_rgb.shape[0], 0)
+                    axes[1].set_xlim(0, orig_rgb.shape[1])
+                    axes[1].set_ylim(orig_rgb.shape[0], 0)
+
                     plt.tight_layout()
+                    plt.savefig(os.path.join(output_dir, f'comparison_{fname}'),
+                                dpi=150, bbox_inches='tight')
                     plt.show()
+
                 except Exception:
                     logging.exception('Error displaying images for %s', fname)
 
