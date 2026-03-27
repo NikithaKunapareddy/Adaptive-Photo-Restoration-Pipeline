@@ -290,17 +290,6 @@ def increase_saturation(img, scale=1.25):
     return saturated
 
 
-def sharpen_image(img):
-    """Sharpen image using a simple kernel (unsharp-ish).
-
-    This kernel emphasizes center pixel and subtracts neighbors.
-    """
-    kernel = np.array([[0, -1, 0],
-                       [-1, 5, -1],
-                       [0, -1, 0]], dtype=np.float32)
-    sharp = cv2.filter2D(img, -1, kernel)
-    return sharp
-
 
 def restore_image(img, sat_scale=1.25, nlm_h=10, median_k=5, clahe_clip=2.0,
                   sat_scale_override=None, unsharp_amount=0.5, spot_thresh=30,
