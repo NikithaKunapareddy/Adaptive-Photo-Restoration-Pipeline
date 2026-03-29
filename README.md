@@ -202,25 +202,28 @@ color_restoration_project/
 flowchart TD
     A["📸 Load Image"] --> B["🔍 Analyze\nNoise / Contrast / Colorfulness"]
     B --> C{Noise Level\nHigh?}
-    C -->|Yes| D["🧹 Non-Local Means\nDenoise"]
-    C -->|No| E["🧹 Median Blur\nLight Denoise"]
+    C -->|Yes| D["🧹 Non-Local Means\nDenoise  h=6"]
+    C -->|No| E["🧹 Median Blur\nLight Denoise  k=3"]
     D --> F["🎨 Adaptive White Balance\nColorfulness → WB weight 25–70%"]
     E --> F
-    F --> G["🌟 Spot Detection + Inpainting\nDust/Scratches removed"]
-    G --> GG["📐 Fold Line Suppression\nHough Transform + Telea Inpaint"]
-    GG --> H["🌗 Multi-Scale CLAHE\n4×4 + 8×8 + 16×16 blended"]
+    F --> G["🌟 Spot Detection + Inpainting\nDust/Scratches  Telea method"]
+    G --> GG["📐 Fold Line Suppression\nHough Transform detects creases\nDirectional bilateral + Telea inpaint"]
+    GG --> H["🌗 Multi-Scale CLAHE\nTile 4×4 fine detail\nTile 8×8 balanced\nTile 16×16 broad gradient\nEqual blend of all three"]
     H --> I["🌈 Saturation Boost\nsat_scale=1.5 in HSV"]
-    I --> J["✨ Unsharp Masking\nEdge Enhancement amount=0.3"]
-    J --> K["📊 Metrics\nMSE/PSNR/SSIM + BRISQUE/NIQE"]
-    K --> L["💾 Save Results\nrestored_* + comparison_* + ablation_*"]
+    I --> J["✨ Unsharp Masking\nEdge Enhancement  amount=0.3"]
+    J --> K["📊 Metrics\nMSE  PSNR  SSIM\nBRISQUE  NIQE"]
+    K --> L["💾 Save Results\nrestored_name\ncomparison_name\nablation_name"]
     L --> M["✅ Output Image"]
     style A fill:#e1f5ff
     style M fill:#c8e6c9
     style D fill:#fff9c4
     style E fill:#fff9c4
     style F fill:#ffe0b2
+    style G fill:#f3e5f5
     style GG fill:#fce4ec
     style H fill:#e8f5e9
+    style K fill:#e3f2fd
+    style L fill:#f1f8e9
 ```
 
 ---
