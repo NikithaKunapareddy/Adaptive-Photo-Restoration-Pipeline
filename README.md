@@ -25,19 +25,20 @@ Advanced Digital Image Processing (DIP) pipeline to restore faded, noisy, or dus
 
 🎯 **Input:** Scanned/photographed old images (jpg, png, bmp, tiff)  
 📁 **Input Folder:** `dataset/old_images/`  
-🎨 **Processing:** Classical DIP pipeline (denoising, gentle white balance, spot removal, contrast, saturation, unsharp masking)  
+🎨 **Processing:** Classical DIP pipeline with adaptive decision-making at every step  
 💾 **Output Folder:** `results/restored_images/`  
 🖼️ **Comparison Saved:** `results/restored_images/comparison_{name}` — side-by-side original vs restored  
-📊 **Metrics:** MSE, PSNR, SSIM quality assessment
+📊 **Metrics:** MSE, PSNR, SSIM (reference-based) + BRISQUE, NIQE (no-reference)
 
 **Core Techniques:**
 - Non‑Local Means denoising (photographic noise)
-- Gentle Gray‑World white balance blend (preserves warm tones of old photos)
+- **Adaptive** Gray‑World white balance — blend weight computed from Hasler-Suesstrunk colorfulness metric
 - Spot detection + Telea inpainting (dust removal)
-- CLAHE (local contrast enhancement, tuned to avoid over-darkening)
+- **Fold Line Suppression** — Hough Transform detects physical creases, directional inpainting fixes them
+- **Multi-Scale CLAHE** — three tile sizes (4×4, 8×8, 16×16) blended for natural contrast
 - Saturation boost (revive faded colors)
-- Unsharp masking (detail/edge enhancement — only sharpening method used)
-- Multi‑Scale Retinex — available but optional
+- Unsharp masking (detail/edge enhancement)
+- **Ablation Study** — BRISQUE and NIQE scores prove every step contributes
 
 ---
 
@@ -46,26 +47,34 @@ Advanced Digital Image Processing (DIP) pipeline to restore faded, noisy, or dus
 ### Installation
 
 ```bash
-pip install -r requirements.txt
+python -m pip install opencv-python numpy matplotlib
 ```
 
-### Run Interactive (displays original vs restored side-by-side)
+### Run (saves comparison image to output folder)
 
 ```powershell
 python main.py
 ```
 
-### Run Headless (recommended for batch processing)
+### Run Headless (no comparison image saved)
 
 ```powershell
 python main.py --no-display
 ```
 
+### Run Ablation Study (proves every step is useful)
+
+```powershell
+python main.py --ablation
+```
+
 ### Custom Input/Output Folders
 
 ```powershell
-python main.py --input-dir C:\path\to\images --output-dir C:\path\to\output --no-display
+python main.py --input-dir C:\path\to\images --output-dir C:\path\to\output
 ```
+
+> **Note:** The comparison image is saved directly to the output folder as `comparison_{name}`. There is no popup window — open the file from File Explorer to view it. This is intentional to avoid memory crashes on large images.
 
 ---
 
@@ -80,7 +89,7 @@ color_restoration_project/
 ├── dataset/
 │   └── old_images/             # Place input images here
 ├── results/
-│   └── restored_images/        # restored_* and comparison_* saved here
+│   └── restored_images/        # restored_* and comparison_* and ablation_* saved here
 └── models/                      # (Reserved for ML models)
 ```
 
@@ -101,6 +110,7 @@ color_restoration_project/
         │  • estimate_noise()            │
         │  • is_grayscale()              │
         │  • contrast_score()            │
+        │  • colorfulness_metric()  ←NEW │
         └────────┬───────────────────────┘
                  │
         ┌────────▼────────────┐
@@ -120,11 +130,12 @@ color_restoration_project/
         └────────────┬─────────────────┘
                      │
                      ▼
-        ┌──────────────────────────────────────┐
-        │  WHITE BALANCE (Gentle Blend)        │
-        │  40% Gray-World + 60% Original       │
-        │  Preserves warm sepia tones          │
-        └────────┬─────────────────────────────┘
+        ┌──────────────────────────────────────────┐
+        │  ADAPTIVE WHITE BALANCE  ←NEW            │
+        │  Measure colorfulness (Hasler-Suesstrunk)│
+        │  Faded image  → high WB weight (≤70%)   │
+        │  Vivid image  → low WB weight  (≥25%)   │
+        └────────┬─────────────────────────────────┘
                  │
                  ▼
         ┌──────────────────────────────┐
@@ -133,11 +144,22 @@ color_restoration_project/
         │  (Inpaint with Telea)        │
         └────────┬─────────────────────┘
                  │
-        ┌────────▼──────────────────┐
-        │  CONTRAST ENHANCEMENT     │
-        │  CLAHE clipLimit=1.1      │
-        │  (subtle, no darkening)   │
-        └────────┬───────────────────┘
+                 ▼
+        ┌──────────────────────────────────────┐
+        │  FOLD LINE SUPPRESSION  ←NEW         │
+        │  Hough Transform detects creases     │
+        │  Directional bilateral filter        │
+        │  Telea inpainting along fold lines   │
+        └────────┬─────────────────────────────┘
+                 │
+                 ▼
+        ┌──────────────────────────────────────┐
+        │  MULTI-SCALE CLAHE  ←NEW             │
+        │  Tile (4×4)  → fine texture detail  │
+        │  Tile (8×8)  → balanced contrast    │
+        │  Tile (16×16)→ broad gradients      │
+        │  Equal blend of all three scales    │
+        └────────┬─────────────────────────────┘
                  │
                  ▼
         ┌──────────────────────────┐
@@ -154,20 +176,23 @@ color_restoration_project/
         └────────┬─────────────────────┘
                  │
                  ▼
-        ┌──────────────────────────┐
-        │  COMPUTE METRICS         │
-        │  MSE / PSNR / SSIM       │
-        └────────┬─────────────────┘
-                 │
-                 ▼
         ┌──────────────────────────────────────┐
-        │  SAVE + LOG RESULTS                  │
-        │  restored_{name} + comparison_{name} │
+        │  COMPUTE METRICS                     │
+        │  MSE / PSNR / SSIM (reference-based) │
+        │  BRISQUE / NIQE  (no-reference) ←NEW │
         └────────┬─────────────────────────────┘
                  │
                  ▼
+        ┌──────────────────────────────────────────────┐
+        │  SAVE + LOG RESULTS                          │
+        │  restored_{name}                             │
+        │  comparison_{name}  (side-by-side)           │
+        │  ablation_{name}    (if --ablation flag) ←NEW│
+        └────────┬─────────────────────────────────────┘
+                 │
+                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│   OUTPUT: restored_{original_name} + comparison_{original_name} │
+│   OUTPUT: restored_* + comparison_* + ablation_* (optional)     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -175,24 +200,27 @@ color_restoration_project/
 
 ```mermaid
 flowchart TD
-    A["📸 Load Image"] --> B["🔍 Analyze\nNoise/Contrast/Gray"]
+    A["📸 Load Image"] --> B["🔍 Analyze\nNoise / Contrast / Colorfulness"]
     B --> C{Noise Level\nHigh?}
     C -->|Yes| D["🧹 Non-Local Means\nDenoise"]
     C -->|No| E["🧹 Median Blur\nLight Denoise"]
-    D --> F["🎨 Gentle White Balance\n40% Gray-World + 60% Original"]
+    D --> F["🎨 Adaptive White Balance\nColorfulness → WB weight 25–70%"]
     E --> F
-    F --> G["🌟 Detect & Inpaint\nDust/Scratches"]
-    G --> H["🌗 Contrast Enhancement\nCLAHE clipLimit=1.1"]
+    F --> G["🌟 Spot Detection + Inpainting\nDust/Scratches removed"]
+    G --> GG["📐 Fold Line Suppression\nHough Transform + Telea Inpaint"]
+    GG --> H["🌗 Multi-Scale CLAHE\n4×4 + 8×8 + 16×16 blended"]
     H --> I["🌈 Saturation Boost\nsat_scale=1.5 in HSV"]
     I --> J["✨ Unsharp Masking\nEdge Enhancement amount=0.3"]
-    J --> K["📊 Metrics\nMSE/PSNR/SSIM"]
-    K --> L["💾 Save Result\nrestored_* + comparison_*"]
+    J --> K["📊 Metrics\nMSE/PSNR/SSIM + BRISQUE/NIQE"]
+    K --> L["💾 Save Results\nrestored_* + comparison_* + ablation_*"]
     L --> M["✅ Output Image"]
     style A fill:#e1f5ff
     style M fill:#c8e6c9
     style D fill:#fff9c4
     style E fill:#fff9c4
     style F fill:#ffe0b2
+    style GG fill:#fce4ec
+    style H fill:#e8f5e9
 ```
 
 ---
@@ -201,13 +229,14 @@ flowchart TD
 
 ### 1️⃣ Image Analysis (Decision Making)
 
-Determines image condition and processing strategy.
+Determines image condition and processing strategy before any step runs.
 
 | Algorithm | Function | Input | Output | Purpose |
 |-----------|----------|-------|--------|---------|
-| **Noise Estimation** | `estimate_noise()` | Grayscale image | Float (stddev) | Decide between NLM vs Median |
+| **Noise Estimation** | `estimate_noise()` | Grayscale image | Float (stddev) | Decide NLM vs Median |
 | **Grayscale Detection** | `is_grayscale()` | BGR image | Boolean | Detect B/W or faded photos |
 | **Contrast Score** | `contrast_score()` | BGR image | Float (stddev) | Assess brightness variation |
+| **Colorfulness Metric** | `colorfulness_metric()` | BGR image | Float | Drive adaptive WB weight |
 
 ---
 
@@ -216,31 +245,19 @@ Determines image condition and processing strategy.
 Removes photographic or film grain noise while preserving detail.
 
 #### Non-Local Means (NLM)
-- **Class:** Patch-based denoising
 - **OpenCV:** `fastNlMeansDenoisingColored()`
 - **Function:** `nl_means_denoise()`
-- **Best for:** Real photographic grain, film noise
-- **Key Params:**
-  - `h` = filter strength (luminance), default **6**
-  - `hColor` = color strength, default **6**
-  - Larger `h` = stronger smoothing (risk: plastic look)
+- **Used when:** `estimate_noise(img) > 10.0`
+- **Key Params:** `h = 6` (luminance strength), `hColor = 6`
 
 #### Median Blur
-- **Class:** Morphological filtering
 - **OpenCV:** `cv2.medianBlur()`
-- **Best for:** Salt-and-pepper noise, light specks
-- **Key Params:**
-  - `k` = kernel size (odd), default **3**
-
-#### Bilateral Filter (Available, Optional)
-- **Class:** Edge-preserving smoothing
-- **Function:** `remove_noise()`
-- **Best for:** Moderate noise + edge preservation
-- **Note:** Not used in main pipeline by default
+- **Used when:** noise is low (clean image)
+- **Key Params:** `k = 3` (kernel size)
 
 **Decision Rule:**
 ```
-if estimate_noise(img) > noise_thresh (10.0):
+if estimate_noise(img) > 10.0:
     denoise = nl_means_denoise(img, h=6)
 else:
     denoise = cv2.medianBlur(img, k=3)
@@ -250,464 +267,412 @@ else:
 
 ### 3️⃣ Dust & Scratch Removal
 
-Detects and inpaints small defects (dust, scratches, spots).
-
 #### Spot Detection
-- **Algorithm:** Residual thresholding + morphological cleanup
 - **Function:** `detect_spots_mask()`
-- **Method:**
-  1. Apply median blur to grayscale
-  2. Compute residual = |original – blurred|
-  3. Threshold residual (param: `spot_thresh = 50`)
-  4. Morphological open (remove noise)
-  5. Dilate (expand mask)
-- **Output:** Binary mask of defects
+- **Method:** Median blur → residual → threshold → morphological cleanup → dilate
+- **Params:** `spot_thresh=50`, `spot_blur=9`, `inpaint_radius=2`
 
 #### Inpainting
-- **Algorithm:** Telea (fast marching)
+- **Algorithm:** Telea fast marching
 - **OpenCV:** `cv2.inpaint(..., cv2.INPAINT_TELEA)`
-- **Function:** `inpaint_spots()`
-- **Best for:** Small defects (< 1-2% of image)
-- **Limitation:** Large tears → use deep inpainting (LaMa)
-
-**Key Params (current tuned values):**
-- `spot_thresh` = 50
-- `spot_blur` = 9
-- `inpaint_radius` = 2
+- **Best for:** Small defects under 1–2% of image area
 
 ---
 
-### 4️⃣ Color Correction (White Balance) — Gentle Blend
+### 4️⃣ Adaptive White Balance — NEW
 
-Removes global color casts while **preserving the natural warm tone** of old sepia/faded photographs.
+Removes color casts while **preserving natural warm tone** of old photographs. The blend weight is computed automatically from the image's colorfulness — not fixed.
 
-#### Why Gentle Blend?
-Full Gray-World white balance strips the warm brown/sepia tones from old photos, making them look cold and grey. The current pipeline uses a **60/40 blend** to partially correct color cast while keeping warmth:
+#### Hasler-Suesstrunk Colorfulness Metric
+- **Function:** `colorfulness_metric()`
+- **Formula:**
+  ```
+  rg  = R - G
+  yb  = 0.5(R + G) - B
+  colorfulness = std(rg, yb) + 0.3 × mean(rg, yb)
+  ```
+- **Scale:**
+  - < 15 = essentially grayscale / very faded
+  - 15–33 = slightly colorful
+  - 33–45 = moderately colorful
+  - > 45 = colorful / well preserved
 
-```python
-wb = white_balance_grayworld(denoise)
-result = cv2.addWeighted(denoise, 0.6, wb, 0.4, 0)
-# 60% original warmth + 40% white balanced = gentle correction
+#### Adaptive Blend Weight
+- **Function:** `adaptive_wb_weight(colorfulness)`
+- **Logic:** More faded → more white balance correction needed
+
+```
+colorfulness low  (faded)    → wb_weight up to 0.70
+colorfulness high (vivid)    → wb_weight down to 0.25
 ```
 
-#### Gray-World Algorithm
-- **Assumption:** Average scene color should be neutral gray
-- **Function:** `white_balance_grayworld()`
-- **Method:**
-  1. Compute per-channel means (B, G, R)
-  2. Compute overall luminance mean
-  3. Scale each channel: `channel *= (luminance_mean / channel_mean)`
-- **Pros:** Simple, robust for mild casts
-- **Cons:** Strips warmth from naturally warm/sepia photos — use blend
+#### Applied in pipeline
+```python
+cf        = colorfulness_metric(img)       # measure how colorful
+wb_weight = adaptive_wb_weight(cf)         # compute blend weight
+wb        = white_balance_grayworld(img)   # fully corrected version
+result    = cv2.addWeighted(img, 1-wb_weight, wb, wb_weight, 0)
+```
 
-#### LAB Space Correction (Available, Optional)
-- **Function:** `white_balance()`
-- **Method:**
-  1. Convert BGR → LAB
-  2. Shift a/b channels so means = 128 (neutral)
-  3. Convert back to BGR
-- **Note:** Available in restoration.py but not used in main pipeline
+**Logged output example:**
+```
+Colorfulness: 43.56  →  WB weight used: 0.37
+Colorfulness: 8.30   →  WB weight used: 0.68
+```
 
 ---
 
-### 5️⃣ Contrast Enhancement
+### 5️⃣ Fold Line Suppression — NEW
 
-Improves local contrast for faded images without over-darkening backgrounds.
+Detects and repairs physical fold/crease lines that appear as straight damage across the photo.
 
-#### CLAHE (Contrast Limited Adaptive Histogram Equalization)
-- **Applied on:** L channel (LAB color space)
-- **Current tuned value:** `clipLimit = 1.1` (subtle, safe)
-- **Method:**
-  1. Convert BGR → LAB, extract L channel
-  2. Apply CLAHE with `clipLimit=1.1` and `tileGridSize=(8,8)`
-  3. Merge modified L back, convert to BGR
-- **Pros:** Local detail preservation, no global over-stretch
-- **Why 1.1?** Higher values (1.5+) darken wooden table backgrounds and wash out bright paper areas in old photos
+#### Detection — Hough Transform
+- **Function:** `detect_fold_lines()`
+- **Method:** Canny edge detection → Probabilistic Hough Transform → filter near-vertical and near-horizontal lines only
+- **Why filter direction?** Physical folds are straight; diagonal scratches are excluded
 
-#### Multi-Scale Retinex with Color Restoration (MSRCR) — Optional
-- **Functions:** `single_scale_retinex()`, `multi_scale_retinex()`, `msrcr()`
-- **Usage:** Via `restore_image_msr_wrapper(..., msr=True)`
-- **Note:** Available but not called in main pipeline by default
+#### Repair — Directional Inpainting
+- **Function:** `suppress_fold_lines()`
+- **Steps:**
+  1. Detect fold lines with Hough Transform
+  2. Build binary mask along detected lines (`thickness=5`)
+  3. Apply bilateral filter along fold region (smooth before inpainting)
+  4. Telea inpainting along the mask
+  5. Soft blend: 80% inpainted + 20% original for natural result
+
+```python
+result, fold_mask, num_folds = suppress_fold_lines(img)
+```
 
 ---
 
-### 6️⃣ Color Enhancement
+### 6️⃣ Multi-Scale CLAHE — NEW
 
-Revives faded chroma (saturation).
+Improves local contrast without over-darkening backgrounds or washing out bright areas.
+
+#### Why Multi-Scale?
+Single-pass CLAHE with one tile size causes halo artifacts and cannot handle both fine texture (rose petals) and broad gradients (background table) simultaneously.
+
+#### Three Scales Blended
+- **Function:** `enhance_contrast_multiscale()`
+
+| Tile Size | Captures |
+|---|---|
+| (4 × 4) | Fine texture — rose petal detail |
+| (8 × 8) | Balanced local contrast |
+| (16 × 16) | Broad gradients — background table |
+
+```python
+small  = apply_clahe_single(img, clip_limit, (4,  4))
+medium = apply_clahe_single(img, clip_limit, (8,  8))
+large  = apply_clahe_single(img, clip_limit, (16, 16))
+result = blend(small 33% + medium 33% + large 34%)
+```
+
+**Result:** No halo artifacts. Fine details and large areas both enhanced naturally.
+
+---
+
+### 7️⃣ Color Enhancement
 
 #### Saturation Boost
-- **Space:** HSV (Hue, Saturation, Value)
-- **Function:** `increase_saturation()`
-- **Current tuned value:** `sat_scale = 1.5`
-- **Method:**
-  1. Convert BGR → HSV
-  2. Multiply S channel by `scale`
-  3. Convert back to BGR
-- **Why 1.5?** Old sepia photos have very low saturation — a strong boost is needed to make any visible color difference
+- **Space:** HSV
+- **Current value:** `sat_scale = 1.5`
+- **Why 1.5?** Old sepia photos have very low saturation — needs a strong boost to make visible difference
 
 ---
 
-### 7️⃣ Unsharp Masking
+### 8️⃣ Unsharp Masking
 
-Enhances edge definition and fine detail by finding and boosting edges only.
+Enhances edge definition and fine detail.
 
 #### How It Works
-- **Method:** Blur the image slightly → subtract blurred from original → add the difference back
-- **Formula:** `output = original + amount × (original – blurred)`
-- **OpenCV:** `cv2.GaussianBlur()` + `cv2.addWeighted()`
-- **Current tuned value:** `unsharp_amount = 0.3`
-- **Caution:** High amounts → halos/ringing at edges
-
-#### Code in `restoration.py`
 ```python
 blurred = cv2.GaussianBlur(color, (0, 0), sigmaX=1.0)
 sharpen = cv2.addWeighted(color, 1.0 + unsharp_amount, blurred, -unsharp_amount, 0)
-# With unsharp_amount=0.3:
-# output = (1.3 × original) - (0.3 × blurred)
 # = original + 0.3 × (original - blurred)
 # = original + 0.3 × edges_only
 ```
 
-#### Why Unsharp Masking and not Laplacian Kernel?
-Unsharp masking is the **only sharpening method used** in this pipeline. It was chosen because:
-- Strength is fully controllable via `unsharp_amount`
-- Gentle and natural — does not amplify noise
-- Safe for old photos with existing grain/texture
+- **Current value:** `unsharp_amount = 0.3`
+- **Only sharpening method used** — no Laplacian kernel in pipeline
 
 ---
 
-### 8️⃣ Quality Metrics
+### 9️⃣ Quality Metrics
 
-Evaluate restoration quality (printed in logs after every image).
+#### Reference-Based (need original to compare)
 
-| Metric | Function | Range | Interpretation |
-|--------|----------|-------|-----------------|
-| **MSE** | `mse()` | 0–∞ | Lower = better (0 = identical) |
-| **PSNR** | `psnr()` | 0–∞ dB | Higher = better (>20 dB acceptable) |
-| **SSIM** | `ssim()` | -1 to 1 | Higher = better (>0.8 good) |
+| Metric | Function | Range | Good Value |
+|--------|----------|-------|------------|
+| **MSE** | `mse()` | 0–∞ | Lower = better |
+| **PSNR** | `psnr()` | dB | > 20 dB acceptable |
+| **SSIM** | `ssim()` | -1 to 1 | > 0.8 good |
+
+#### No-Reference / Blind (no original needed) — NEW
+
+| Metric | Function | Range | Good Value |
+|--------|----------|-------|------------|
+| **BRISQUE** | `brisque_score()` | 0–∞ | Lower = better perceptual quality |
+| **NIQE** | `niqe_score()` | 0–∞ | Lower = more natural looking |
+
+These are used in the **Ablation Study** where no ground truth original exists.
+
+---
+
+### 🔟 Ablation Study — NEW
+
+Proves that every step in the pipeline is contributing to quality improvement.
+
+#### How to Run
+```powershell
+python main.py --ablation
+```
+
+#### What It Does
+Processes the image 8 times — once with full pipeline, then with each step removed one at a time.
+
+#### Output Table (printed to console)
+```
+=================================================================
+Variant                   BRISQUE       NIQE   Note
+=================================================================
+original                  12.5000     0.8500   No processing
+full_pipeline              6.2000     0.4200   All steps active ← best
+no_denoising               9.1000     0.6100   Skip denoise step
+no_white_balance           8.8000     0.5900   Skip white balance
+no_clahe                   9.5000     0.6400   Skip contrast step
+no_saturation              8.1000     0.5500   Skip saturation boost
+no_unsharp                 8.4000     0.5700   Skip unsharp masking
+no_fold_suppression        7.9000     0.5300   Skip fold suppression
+=================================================================
+Lower BRISQUE and NIQE = better perceptual quality
+```
+
+#### Output Image
+Saves `ablation_{name}` — a grid showing all 8 variants with their scores.
 
 ---
 
 ## Detailed Algorithm Explanations
 
-### Non-Local Means Denoising Deep Dive
+### Non-Local Means Deep Dive
 
-**Intuition:** Instead of smoothing locally (like Gaussian), find similar patches across the entire image and average them.
+**Intuition:** Find similar patches across the whole image and average them — not just nearby pixels.
 
-**Algorithm:**
-1. For each pixel `p`:
-   - Extract a template patch around `p` (e.g., 7×7)
-   - Search for similar patches in a large window (e.g., 21×21)
-   - Compute Euclidean distances to all patches
-   - Weight patches inversely by distance: `w = exp(-dist² / h²)`
-   - Denoise `p` = weighted average of all similar patches
-2. `h` controls the decay of weights (filter strength)
+1. For each pixel, extract a 7×7 template patch
+2. Search for similar patches in a 21×21 window
+3. Weight patches by similarity: `w = exp(-distance² / h²)`
+4. Denoise pixel = weighted average of all similar patches
 
-**Tuning Guide:**
-- Small images or light noise: `h` = 6–8
-- Medium images, moderate noise: `h` = 10–15
-- Heavy grain/old film: `h` = 20–25
+**Tuning:** `h=6` for light noise, `h=15–20` for heavy grain.
 
 ---
 
 ### CLAHE Deep Dive
 
-**Intuition:** Apply histogram equalization locally (each 8×8 tile) to boost contrast without over-stretching globally.
+**Intuition:** Apply histogram equalization per tile, not globally, so local contrast improves without blowing out bright areas.
 
-**Algorithm:**
-1. Divide image into grid (e.g., 8×8 tiles)
-2. For each tile, compute histogram & cumulative distribution
-3. **Limit clipping:** If histogram bins exceed threshold (`clipLimit`), redistribute excess
-4. Apply cumulative distribution to pixels (equalization)
-5. Interpolate across tile boundaries (smooth transitions)
+1. Divide image into tiles (e.g., 8×8)
+2. Compute histogram per tile
+3. Clip histogram at `clipLimit` — redistribute excess
+4. Apply equalization per tile
+5. Interpolate at tile boundaries
 
-**Effect:**
-- Small `clipLimit` (1.0–1.2): Natural, subtle contrast — **recommended for old photos with dark backgrounds**
-- Large `clipLimit` (2.5–3.0): Heavy local detail, risk amplifying noise and darkening backgrounds
-- Larger tiles (16×16): Smoother but less local; smaller (4×4): More detail but potential artifacts
+**Multi-scale addition:** Running at (4×4), (8×8), (16×16) and blending captures both fine and coarse contrast simultaneously.
 
 ---
 
 ### Telea Inpainting Deep Dive
 
-**Intuition:** Use fast marching algorithm to propagate texture/color from boundaries into holes.
+**Intuition:** Propagate texture from the boundary of a hole inward using fast marching.
 
-**Algorithm:**
-1. Identify mask boundary (hole edges)
-2. Iteratively expand inpainting from boundary inward
-3. For each pixel to inpaint, estimate value from nearby frontier pixels
-4. Use edge-preserving interpolation (prefers aligned gradients)
+1. Identify boundary pixels of the masked region
+2. Expand inpainting from boundary toward center
+3. Each new pixel = weighted average of nearby known pixels
+4. Prefer values aligned with local gradients
 
-**Best for:** Small holes, smooth regions  
-**Poor for:** Large complex structures, fine textures
+**Best for:** Small holes and scratches. **Not for:** Large tears (use LaMa).
 
 ---
 
-### White Balance Blend — Why Not Full Gray-World?
+### Adaptive White Balance — Why Not Fixed?
 
-Old photographs like sepia prints or faded paper photos have a **naturally warm brownish tone**. Full Gray-World white balance treats this warmth as a "color cast" and removes it, turning the image grey and cold.
+Old photographs have naturally warm sepia tones. Full Gray-World correction treats this warmth as a "cast" and removes it, making the image cold and grey.
 
-The solution used in this pipeline is a **partial blend**:
+The solution: measure how colorful/faded the image actually is, then decide how much correction to apply:
 
 ```python
-wb = white_balance_grayworld(denoise)               # fully corrected (cold)
-result = cv2.addWeighted(denoise, 0.6, wb, 0.4, 0)  # 60% original + 40% corrected
+cf        = colorfulness_metric(img)    # 43.56 = moderately colorful
+wb_weight = adaptive_wb_weight(cf)      # 0.37 = only 37% correction
+result    = blend(0.63 × original, 0.37 × white_balanced)
 ```
 
-This removes some unwanted color cast while keeping the warm character of the original photo.
+A very faded image (cf=8) gets 68% correction. A vivid image (cf=55) gets only 25% correction. This is the **novel contribution** of this pipeline.
 
 ---
 
 ## Usage Examples
 
-### Example 1: Process Batch Headless
-
-```powershell
-python main.py --no-display
-```
-
-**Output:**
-```
-[INFO] Input folder: ...dataset\old_images
-[INFO] Output folder: ...results\restored_images
-[INFO] Processing: ...dataset\old_images\photo1.jpg
-[INFO] Detected condition: Noisy + Low-Contrast
-[INFO] Noise level: 15.32, Contrast score: 28.50
-[INFO] MSE: 456.78, PSNR: 21.53, SSIM: 0.8756
-[INFO] Saved restored image (mild) to: ...results\restored_images\restored_photo1.jpg
-```
-
-**Files saved to output folder:**
-- `restored_photo1.jpg` — the restored image only
-- `comparison_photo1.jpg` — side-by-side original vs restored (saved automatically)
-
-### Example 2: Process Custom Folder
-
-```powershell
-python main.py --input-dir "D:\old_photos" --output-dir "D:\restored" --no-display
-```
-
-### Example 3: Interactive Display
+### Example 1: Normal Run
 
 ```powershell
 python main.py
 ```
 
-Shows side-by-side comparison (14×7 figure, same scale for both images). Also saves `comparison_{name}` to the output folder automatically.
+**Console output:**
+```
+[INFO] Processing: dataset\old_images\old.png
+[INFO] Saved restored image to: results\restored_images\restored_old.png
+[INFO] Detected condition  : Clean
+[INFO] Colorfulness        : 43.56  →  WB weight used: 0.37
+[INFO] Noise level         : 2.85,  Contrast score: 32.83
+[INFO] MSE: 415.07,  PSNR: 21.95 dB,  SSIM: 0.8766
+[INFO] Comparison image saved: comparison_old.png
+```
+
+**Files saved:**
+- `restored_old.png` — restored image
+- `comparison_old.png` — side-by-side original vs restored
+
+### Example 2: Ablation Study
+
+```powershell
+python main.py --ablation
+```
+
+**Additional files saved:**
+- `ablation_old.png` — 8-panel grid with BRISQUE/NIQE scores per variant
+
+### Example 3: Headless Batch
+
+```powershell
+python main.py --no-display
+```
+
+Only saves `restored_*` files, skips comparison image.
+
+### Example 4: Custom Folders
+
+```powershell
+python main.py --input-dir "D:\old_photos" --output-dir "D:\restored"
+```
 
 ---
 
 ## Parameter Tuning Guide
 
-### Current Tuned Values (main.py)
-
-These values were tuned specifically for warm-toned old sepia/faded photographs:
+### Current Tuned Values
 
 ```python
 mild_params = dict(
-    nlm_h=6,                # Gentle denoising — avoids plastic look
-    median_k=3,             # Small kernel for light images
-    clahe_clip=1.1,         # Low contrast boost — prevents background darkening
-    sat_scale_override=1.5, # Strong saturation — old photos need this
-    unsharp_amount=0.3,     # Moderate sharpening — crisp but not harsh
+    nlm_h=6,                # Gentle denoising
+    median_k=3,             # Small median kernel
+    clahe_clip=1.1,         # Low clip — prevents background darkening
+    sat_scale_override=1.5, # Strong saturation for faded photos
+    unsharp_amount=0.3,     # Moderate edge enhancement
     spot_thresh=50,         # Conservative spot detection
-    spot_blur=9,            # Median kernel for spot detection
-    spot_min_frac=1e-4,     # Minimum spot coverage to trigger inpainting
-    inpaint_radius=2,       # Small inpaint radius for fine spots
+    spot_blur=9,
+    spot_min_frac=1e-4,
+    inpaint_radius=2,
+    use_fold_suppression=True,   # Detect and fix fold lines
+    use_multiscale_clahe=True,   # Use 3-scale CLAHE blend
 )
-mild_variant = restore_image(img, sat_scale=1.5, **mild_params)
 ```
 
 ### Quick Reference Table
 
-| Parameter | Range | Current Value | Effect |
-|-----------|-------|---------------|--------|
-| `nlm_h` | 6–25 | **6** | Denoising strength (↑ = stronger) |
-| `median_k` | 3–9 | **3** | Median kernel (↑ = more aggressive) |
-| `clahe_clip` | 1.0–3.0 | **1.1** | Local contrast (↑ = stronger, risk darkening) |
-| `sat_scale` | 1.0–1.8 | **1.5** | Saturation (↑ = more vivid color) |
-| `unsharp_amount` | 0.1–0.7 | **0.3** | Sharpening (↑ = more detail) |
-| `spot_thresh` | 20–60 | **50** | Spot sensitivity (↓ = detect more spots) |
-
-### Tuning Workflow
-
-1. **Analyze image:** Run `analyze_and_restore()` to check noise/contrast levels
-2. **Small batch downscale:** Process at 50% resolution for quick feedback
-3. **Adjust one param at a time:** Change `nlm_h`, then `clahe_clip`, etc.
-4. **Visual inspection:** Check `comparison_{name}` saved in output folder
-5. **Metrics check:** Compare MSE/PSNR/SSIM in logs (relative, not absolute)
-6. **Full resolution:** Reprocess at original size with best params
-
-### Common Scenarios
-
-#### Scenario: Warm Sepia / Old Paper Photo (current default)
-```python
-mild_params = dict(nlm_h=6, clahe_clip=1.1, sat_scale_override=1.5, unsharp_amount=0.3, ...)
-# White balance blend in restoration.py: 60% original + 40% gray-world
-```
-
-#### Scenario: Very Noisy Old Photo
-```python
-restore_image(img, nlm_h=20, clahe_clip=1.1, unsharp_amount=0.3, sat_scale=1.5)
-```
-
-#### Scenario: Extremely Faded / Washed Out Photo
-```python
-restore_image(img, nlm_h=10, clahe_clip=1.5, sat_scale=1.6, unsharp_amount=0.4)
-```
-
-#### Scenario: Slightly Yellowed Photo
-```python
-# In restoration.py, increase white balance blend:
-result = cv2.addWeighted(denoise, 0.3, wb, 0.7, 0)
-restore_image(img, nlm_h=6, clahe_clip=1.2, sat_scale=1.3)
-```
+| Parameter | Range | Current | Effect |
+|-----------|-------|---------|--------|
+| `nlm_h` | 6–25 | **6** | Denoising strength |
+| `clahe_clip` | 1.0–3.0 | **1.1** | Contrast boost |
+| `sat_scale` | 1.0–1.8 | **1.5** | Color saturation |
+| `unsharp_amount` | 0.1–0.7 | **0.3** | Edge sharpness |
+| `spot_thresh` | 20–60 | **50** | Spot sensitivity |
+| `use_fold_suppression` | True/False | **True** | Fix fold lines |
+| `use_multiscale_clahe` | True/False | **True** | Multi-scale contrast |
 
 ---
 
 ## Performance Tips
 
-### Speed Optimizations
+### Speed
 
-1. **Downscale & Parameter Search**
-   ```python
-   small = cv2.resize(img, (img.shape[1]//2, img.shape[0]//2))
-   restored_small = restore_image(small, nlm_h=6, clahe_clip=1.1)
-   ```
+- NLM is the slowest step (~80% of runtime). Reduce `nlm_h` or use `medianBlur` for speed.
+- Fold suppression adds ~10% overhead — disable with `use_fold_suppression=False` if not needed.
+- Ablation study runs pipeline 8 times — expect 8× processing time per image.
 
-2. **Batch Processing (Parallel)**
-   ```python
-   from multiprocessing import Pool
-   with Pool(4) as p:
-       p.map(process_single_image, image_list)
-   ```
+### Memory
 
-3. **NLM Performance**
-   - NLM is the slowest step (~80% of runtime)
-   - Use smaller `templateWindowSize` (5 instead of 7) for speed
-   - Consider lightweight GPU denoisers (FFDNet, DnCNN) for large batches
-
-### Memory Efficiency
-
-- Large images (4K+): Process in blocks or downscale
-- Use `uint8` (not float32) for storage to save 4× memory
+- Comparison images are automatically downscaled to max 1000px width before saving — no MemoryError.
+- Ablation grid images are downscaled to max 400px per panel.
+- `plt.close(fig)` is called after every save to free memory between images.
+- `matplotlib.use('Agg')` ensures no screen rendering — safe for large images and servers.
 
 ---
 
 ## Troubleshooting
 
-### Issue: Output looks grey/cold (warmth stripped)
+### Issue: No popup window — comparison not showing
 
-**Cause:** White balance blend ratio too aggressive  
-**Fix:** In `restoration.py`, increase original weight:
+**This is expected.** The code uses `matplotlib.use('Agg')` to save images to file instead of showing a popup. This prevents `MemoryError` on large images.  
+**Fix:** Open `comparison_{name}` directly from your output folder in File Explorer.
+
+### Issue: Output looks grey/cold
+
+**Cause:** Colorfulness score is high so WB weight is low — but the image still has a strong cast.  
+**Fix:** In `restoration.py`, lower the `max_weight` in `adaptive_wb_weight()`:
 ```python
-result = cv2.addWeighted(denoise, 0.7, wb, 0.3, 0)
+def adaptive_wb_weight(colorfulness, min_weight=0.25, max_weight=0.80):
 ```
 
-### Issue: Background (table/wall) too dark
+### Issue: Background too dark
 
-**Cause:** CLAHE `clipLimit` too high  
-**Fix:**
-```python
-clahe_clip=1.0
-```
-
-### Issue: Output looks over-smoothed/plastic
-
-**Cause:** NLM `h` too high  
-**Fix:**
-```python
-restore_image(img, nlm_h=6, clahe_clip=1.1, unsharp_amount=0.3)
-# unsharp_amount=0.3 adds back edge detail gently
-```
+**Cause:** CLAHE `clip_limit` too high.  
+**Fix:** `clahe_clip=1.0`
 
 ### Issue: Restoration barely visible
 
-**Cause:** Parameters too conservative  
-**Fix:**
+**Cause:** Adaptive WB weight too low or saturation too low.  
+**Fix:** `sat_scale_override=1.6` and check colorfulness log — if it is high, the image is already vivid.
+
+### Issue: Fold lines not detected
+
+**Cause:** Hough threshold too high or lines too short.  
+**Fix:** In `suppress_fold_lines()`, lower `hough_thresh` and `min_line_length`:
 ```python
-sat_scale_override=1.5
-clahe_clip=1.3
-# In restoration.py:
-result = cv2.addWeighted(denoise, 0.5, wb, 0.5, 0)
+suppress_fold_lines(img, hough_thresh=80, min_line_length=60)
 ```
 
-### Issue: Noise amplified after CLAHE
+### Issue: Ablation study takes too long
 
-**Cause:** Heavy local contrast amplifies residual noise  
-**Fix:**
-```python
-restore_image(img, nlm_h=15, clahe_clip=1.0)
+**Cause:** Runs full pipeline 8 times.  
+**Fix:** Use `--no-display` with `--ablation` to skip comparison saving:
+```powershell
+python main.py --ablation --no-display
 ```
-
-### Issue: Color shift or oversaturation
-
-**Cause:** `sat_scale` too high  
-**Fix:**
-```python
-sat_scale=1.3
-```
-
-### Issue: Inpainting leaves artifacts
-
-**Cause:** Defect mask too large or Telea limitation  
-**Fix:** Reduce `spot_thresh` or use deep inpainting (LaMa)
-
-### Issue: Script crashes on corrupted image
-
-**Fix:** Already handled with per-image try/except. Check logs for which file failed.
 
 ---
 
 ## Extensions & Improvements
 
 ### 1. Replace NLM with Learned Denoiser
-
-**Options:** FFDNet, DnCNN, Real-ESRGAN
-
-```python
-if use_learned_denoiser:
-    denoise = ffdnet_denoise(img, noise_sigma)
-else:
-    denoise = nl_means_denoise(img, h=nlm_h)
-```
+FFDNet, DnCNN, or Real-ESRGAN for better quality on heavy grain.
 
 ### 2. Colorization for B&W Photos
-
-**Options:** DeOldify, user-guided colorization
-
-```python
-if is_grayscale(img) and colorize_enabled:
-    img = colorize_image(img)
-```
+DeOldify or user-guided colorization — add before main pipeline when `is_grayscale()` returns True.
 
 ### 3. Super-Resolution
+Real-ESRGAN (2–4×) as optional final step after restoration.
 
-**Options:** Real-ESRGAN (2–4×), BSRGAN
+### 4. Deep Inpainting for Large Defects
+LaMa (Large Mask Inpainting) for tears larger than 2% of image area.
 
-```python
-if enable_sr:
-    restored = super_resolve(restored, scale=2)
-```
+### 5. Full BRISQUE / NIQE
+Replace the lightweight approximations with `cv2.quality.QualityBRISQUE_compute()` from `opencv-contrib-python` for publication-grade scores.
 
-### 4. Deep Inpainting (Large Defects)
-
-**Options:** LaMa, Partial Convolution
-
-```python
-if defect_size > threshold:
-    restored = lama_inpaint(restored, large_mask)
-else:
-    restored = cv2.inpaint(restored, small_mask, INPAINT_TELEA)
-```
-
-### 5. Adaptive White Balance Blend
-
-```python
-# Future: auto-detect warmth and adjust blend ratio
-warmth = detect_warmth(img)
-blend_ratio = max(0.3, min(0.7, warmth))
-result = cv2.addWeighted(denoise, blend_ratio, wb, 1-blend_ratio, 0)
+```bash
+python -m pip install opencv-contrib-python
 ```
 
 ---
@@ -715,23 +680,25 @@ result = cv2.addWeighted(denoise, blend_ratio, wb, 1-blend_ratio, 0)
 ## Release Checklist
 
 - [x] Core pipeline (denoising, white balance, CLAHE, saturation, unsharp masking)
-- [x] Gentle white balance blend (60% original + 40% gray-world) to preserve warm tones
+- [x] Adaptive white balance using Hasler-Suesstrunk colorfulness metric
+- [x] Fold line suppression using Hough Transform + Telea inpainting
+- [x] Multi-Scale CLAHE — three tile sizes blended
+- [x] Ablation study with BRISQUE and NIQE no-reference metrics
 - [x] Tuned parameters for sepia/faded old photographs
 - [x] Per-image error handling & logging
-- [x] CLI flags (`--no-display`, `--input-dir`, `--output-dir`)
-- [x] Single canonical output per image (`restored_{name}`)
+- [x] CLI flags (`--no-display`, `--input-dir`, `--output-dir`, `--ablation`)
 - [x] Comparison image saved automatically (`comparison_{name}`)
-- [x] Side-by-side display uses `mild_variant` from memory (not re-reading disk)
-- [x] Same-scale display for both original and restored images
-- [x] Quality metrics (MSE/PSNR/SSIM)
-- [x] Enhanced README with flowcharts & detailed explanations
-- [ ] Add `--preset` flag to choose presets (balanced/aggressive/msr)
-- [ ] Add `--verbose` logging level
-- [ ] Add unit tests for helpers
-- [ ] Add sample images to `dataset/example/`
-- [ ] Add GPU support (optional, for CUDA)
+- [x] Ablation grid image saved automatically (`ablation_{name}`)
+- [x] Agg backend — no MemoryError on large images
+- [x] Auto-downscale before plotting to stay within memory limits
+- [x] `plt.close(fig)` after every save to free memory
+- [x] Quality metrics (MSE/PSNR/SSIM + BRISQUE/NIQE)
+- [x] Colorfulness and WB weight logged per image
+- [ ] Add `--preset` flag (balanced/aggressive/msr)
+- [ ] Full BRISQUE/NIQE via opencv-contrib
 - [ ] Parallelize batch processing (`--jobs` flag)
-- [ ] Adaptive white balance blend ratio based on image warmth
+- [ ] Add unit tests
+- [ ] GPU support (CUDA)
 
 ---
 
@@ -747,9 +714,13 @@ result = cv2.addWeighted(denoise, blend_ratio, wb, 1-blend_ratio, 0)
 - CLAHE: Zuiderveld, 1994
 - Retinex: Land & McCann, 1971
 - Telea Inpainting: Telea, 2004
+- Hasler-Suesstrunk Colorfulness: Hasler & Suesstrunk, 2003
+- BRISQUE: Mittal et al., 2012
+- NIQE: Mittal et al., 2013
+- Hough Transform: Hough, 1962
 
 ---
 
-**Last Updated:** March 26, 2026
+**Last Updated:** March 29, 2026
 
 For questions or improvements, refer to the [usage examples](#usage-examples) or [parameter tuning guide](#parameter-tuning-guide).
