@@ -75,6 +75,183 @@ def remove_noise(img, d=9, sigma_color=75, sigma_space=75):
 
 
 # ─────────────────────────────────────────────
+# BLUR DETECTION & DEBLURRING  ← NEW
+# ─────────────────────────────────────────────
+
+def detect_blur_level(img):
+    """Detect blur level using Laplacian variance method.
+    
+    Returns blur_level (float):
+      < 100   = very blurry (severe blur)
+      100-200 = blurry (moderate blur)
+      200-500 = slightly blurry (minor blur)
+      > 500   = sharp image
+    
+    Also returns a boolean indicating if image is significantly blurred.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    blur_level = float(np.var(laplacian))
+    is_blurred = blur_level < 200  # threshold for "blurry" detection
+    return blur_level, is_blurred
+
+
+def wiener_filter_deblur(img, noise_variance=None):
+    """Apply Wiener filtering for deblurring - AGGRESSIVE version.
+    
+    Applies multiple refinement passes to recover detail from blur.
+    """
+    if len(img.shape) == 3:
+        channels = cv2.split(img)
+        deblurred = [_aggressive_wiener(ch, noise_variance) for ch in channels]
+        return cv2.merge(deblurred)
+    else:
+        return _aggressive_wiener(img, noise_variance)
+
+
+def _aggressive_wiener(channel, noise_variance=None):
+    """Wiener filtering with 2 passes - balanced strength."""
+    channel_f = channel.astype(np.float64)
+    
+    if noise_variance is None:
+        laplacian = cv2.Laplacian(channel, cv2.CV_64F)
+        noise_variance = max(np.var(laplacian) * 0.15, 0.05)
+    
+    # Apply 2 passes only (not 3) with balanced kernels
+    result = channel_f.copy()
+    
+    for kernel_size in [11, 7]:
+        local_mean = cv2.GaussianBlur(result, (kernel_size, kernel_size), 1.5)
+        local_sq_mean = cv2.GaussianBlur(result**2, (kernel_size, kernel_size), 1.5)
+        local_var = local_sq_mean - local_mean**2
+        local_var = np.maximum(local_var, noise_variance)
+        
+        # Standard Wiener formula
+        result = local_mean + (local_var - noise_variance) / (local_var + 1e-8) * (result - local_mean)
+    
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+def bilateral_sharpen(img, blur_level):
+    """Bilateral filtering for edge-preserving sharpening.
+    
+    Removes detail loss while preserving edges - excellent for deblurring.
+    """
+    # Multiple bilateral filter passes
+    result = img.copy()
+    
+    if blur_level < 150:
+        # Very blurry - 4 aggressive passes
+        for _ in range(4):
+            result = cv2.bilateralFilter(result.astype(np.uint8), d=15, sigmaColor=50, sigmaSpace=50)
+    elif blur_level < 300:
+        # Blurry - 3 passes
+        for _ in range(3):
+            result = cv2.bilateralFilter(result.astype(np.uint8), d=12, sigmaColor=45, sigmaSpace=45)
+    else:
+        # Slightly blurry - 2 passes
+        for _ in range(2):
+            result = cv2.bilateralFilter(result.astype(np.uint8), d=10, sigmaColor=40, sigmaSpace=40)
+    
+    return result
+
+
+def high_pass_filter_sharpen(img, blur_level):
+    """High-pass filter sharpening - MUCH STRONGER version for severe blur.
+    
+    Extracts high-frequency details and adds them back aggressively.
+    """
+    if len(img.shape) == 3:
+        channels = cv2.split(img)
+        sharpened_channels = []
+        for ch in channels:
+            sharpened_channels.append(_high_pass_aggressive(ch, blur_level))
+        return cv2.merge(sharpened_channels)
+    else:
+        return _high_pass_aggressive(img, blur_level)
+
+
+def _high_pass_aggressive(channel, blur_level):
+    """High-pass filter for single channel - BALANCED."""
+    ch_f = channel.astype(np.float32)
+    
+    # Balanced parameters - not overly aggressive
+    if blur_level < 100:
+        sigma = 2.5
+        strength = 0.8   # Reduced from 1.8
+    elif blur_level < 200:
+        sigma = 2.0
+        strength = 0.6   # Reduced from 1.5
+    else:
+        sigma = 1.5
+        strength = 0.4   # Reduced from 1.0
+    
+    # Single pass only (not multiple)
+    blurred = cv2.GaussianBlur(ch_f, (0, 0), sigmaX=sigma)
+    high_pass = ch_f - blurred
+    result = ch_f + strength * high_pass
+    
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+def adaptive_unsharp_mask(img, blur_level, base_amount=0.3):
+    """Apply unsharp masking with strength adapted to detected blur level.
+    
+    Balanced strength - not too aggressive.
+    """
+    if blur_level < 100:
+        amount = base_amount * 3.0  # 3x for very blurry (reduced from 5x)
+    elif blur_level < 200:
+        amount = base_amount * 2.0  # 2x for blurry (reduced from 3.5x)
+    elif blur_level < 500:
+        amount = base_amount * 1.3  # 1.3x for slightly blurry
+    else:
+        amount = base_amount * 0.7  # Only 0.7x for sharp
+    
+    # Single pass unsharp masking
+    blurred = cv2.GaussianBlur(img, (0, 0), sigmaX=1.0)
+    result = cv2.addWeighted(img, 1.0 + amount, blurred, -amount, 0)
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+def enhance_edges_adaptive(img, blur_level):
+    """Apply edge enhancement adapted to blur level - BALANCED.
+    
+    Not too aggressive to avoid artifacts.
+    """
+    if blur_level > 400:
+        return img  # Skip for mostly sharp images
+    
+    # Moderate kernel strength - not extreme
+    if blur_level < 100:
+        strength = 0.6  # Moderate for very blurry
+    elif blur_level < 200:
+        strength = 0.4  # Mild for blurry
+    else:
+        strength = 0.2  # Very mild for slight blur
+    
+    # Edge enhancement kernel
+    kernel = np.array([[-strength, -strength, -strength],
+                       [-strength,  1+8*strength, -strength],
+                       [-strength, -strength, -strength]])
+    
+    # Apply to each channel
+    if len(img.shape) == 3 and img.shape[2] == 3:
+        channels = cv2.split(img)
+        enhanced = [cv2.filter2D(ch.astype(np.float32), -1, kernel) for ch in channels]
+        result = cv2.merge([np.clip(c, 0, 255).astype(np.uint8) for c in enhanced])
+    else:
+        result = cv2.filter2D(img.astype(np.float32), -1, kernel)
+        result = np.clip(result, 0, 255).astype(np.uint8)
+    
+    # Conservative blending 
+    blend_alpha = 0.55 if blur_level < 200 else 0.7
+    result = cv2.addWeighted(result, blend_alpha, img, 1 - blend_alpha, 0)
+    
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+# ─────────────────────────────────────────────
 # SPOT / DUST REMOVAL
 # ─────────────────────────────────────────────
 
@@ -427,42 +604,70 @@ def msrcr(img, scales=(15, 80, 250), G=192, b=-30, alpha=125, beta=46):
 def restore_image(img, sat_scale=1.25, nlm_h=10, median_k=5, clahe_clip=1.1,
                   sat_scale_override=None, unsharp_amount=0.3, spot_thresh=30,
                   spot_blur=9, spot_min_frac=5e-5, inpaint_radius=2,
-                  use_fold_suppression=True, use_multiscale_clahe=True):
+                  use_fold_suppression=True, use_multiscale_clahe=True,
+                  use_deblur=True, use_adaptive_sharpen=True):
     """Restore image using the full enhanced pipeline.
 
     New parameters vs original:
       use_fold_suppression  : if True, detect and suppress physical fold lines
       use_multiscale_clahe  : if True, use multi-scale CLAHE (3 tile sizes blended)
-    White balance is now ADAPTIVE based on colorfulness metric.
+      use_deblur            : if True, apply Wiener deblurring for blurry images
+      use_adaptive_sharpen  : if True, adapt sharpening strength to detected blur
+      
+    White balance is ADAPTIVE based on colorfulness metric.
+    Unsharp masking strength is ADAPTIVE based on detected blur level.
     """
-    # Step 1: Denoising
-    noise_lvl = estimate_noise(img)
-    if noise_lvl > 10.0:
-        denoise = nl_means_denoise(img, h=nlm_h, hColor=nlm_h)
+    # Detect blur level
+    blur_level, is_blurred = detect_blur_level(img)
+    
+    # Step 1: BALANCED Deblurring (if image is blurry)
+    if use_deblur and is_blurred:
+        # Use ONLY Wiener filtering - don't stack multiple methods
+        img_deblur = wiener_filter_deblur(img)
     else:
-        denoise = cv2.medianBlur(img, median_k)
+        img_deblur = img
+    
+    # Step 2: Denoising
+    noise_lvl = estimate_noise(img_deblur)
+    if noise_lvl > 10.0:
+        denoise = nl_means_denoise(img_deblur, h=nlm_h, hColor=nlm_h)
+    else:
+        denoise = cv2.medianBlur(img_deblur, median_k)
 
-    # Step 2: Adaptive white balance (colorfulness-based blend weight)
+    # Step 3: Adaptive white balance (colorfulness-based blend weight)
     result, colorfulness, wb_weight = white_balance_adaptive(denoise)
 
-    # Step 3: Spot detection & inpainting
+    # Step 4: Spot detection & inpainting
     mask, have_spots = detect_spots_mask(result, thresh=spot_thresh,
                                           blur_size=spot_blur, min_frac=spot_min_frac)
     if have_spots:
         result = cv2.inpaint(result, mask, inpaint_radius, cv2.INPAINT_TELEA)
 
-    # Step 4: Fold line suppression (NEW)
+    # Step 5: Fold line suppression
     num_folds = 0
     if use_fold_suppression:
         result, fold_mask, num_folds = suppress_fold_lines(result)
 
-    # Step 5: Contrast enhancement
-    if use_multiscale_clahe:
-        contrast = enhance_contrast_multiscale(result, clip_limit=clahe_clip)
+    # Step 6: Contrast enhancement (balanced aggressive)
+    if blur_level < 100:
+        # Blurry - moderate boost
+        adaptive_clahe_clip = 1.5
+    elif blur_level < 200:
+        # Blurry - mild boost
+        adaptive_clahe_clip = 1.3
+    elif blur_level < 500:
+        # Slightly blurry - gentle boost
+        adaptive_clahe_clip = 1.2
     else:
-        contrast = apply_clahe_single(result, clahe_clip, (8, 8))
+        # Sharp - normal
+        adaptive_clahe_clip = clahe_clip
+    
+    if use_multiscale_clahe:
+        contrast = enhance_contrast_multiscale(result, clip_limit=adaptive_clahe_clip)
+    else:
+        contrast = apply_clahe_single(result, adaptive_clahe_clip, (8, 8))
 
-    # Step 6: Saturation boost
+    # Step 7: Saturation boost
     hsv = cv2.cvtColor(contrast, cv2.COLOR_BGR2HSV).astype(np.float32)
     h, s, v = cv2.split(hsv)
     scale = sat_scale_override if sat_scale_override is not None else sat_scale
@@ -470,9 +675,20 @@ def restore_image(img, sat_scale=1.25, nlm_h=10, median_k=5, clahe_clip=1.1,
     color = cv2.cvtColor(cv2.merge((h.astype(np.uint8), s, v.astype(np.uint8))),
                           cv2.COLOR_HSV2BGR)
 
-    # Step 7: Unsharp masking
-    blurred = cv2.GaussianBlur(color, (0, 0), sigmaX=1.0)
-    sharpen = cv2.addWeighted(color, 1.0 + unsharp_amount, blurred, -unsharp_amount, 0)
+    # Step 8: Adaptive edge enhancement (for blurry images)
+    if is_blurred:
+        color = enhance_edges_adaptive(color, blur_level)
+    
+    # Step 8b: High-pass filter sharpening (SINGLE PASS - not double)
+    if blur_level < 250:
+        color = high_pass_filter_sharpen(color, blur_level)
+    
+    # Step 9: Adaptive unsharp masking (SINGLE PASS - not double)
+    if use_adaptive_sharpen:
+        sharpen = adaptive_unsharp_mask(color, blur_level, base_amount=unsharp_amount)
+    else:
+        blurred = cv2.GaussianBlur(color, (0, 0), sigmaX=1.0)
+        sharpen = cv2.addWeighted(color, 1.0 + unsharp_amount, blurred, -unsharp_amount, 0)
 
     return sharpen
 
@@ -484,7 +700,7 @@ def restore_image(img, sat_scale=1.25, nlm_h=10, median_k=5, clahe_clip=1.1,
 def run_ablation_study(img, sat_scale=1.5, nlm_h=6, median_k=3, clahe_clip=1.1,
                         sat_scale_override=1.5, unsharp_amount=0.3,
                         spot_thresh=50, spot_blur=9, spot_min_frac=1e-4,
-                        inpaint_radius=2):
+                        inpaint_radius=2, use_deblur=True, use_adaptive_sharpen=True):
     """Run ablation study — process image with each step removed one at a time.
 
     Returns a dict of variant_name → (restored_image, brisque, niqe)
@@ -498,6 +714,8 @@ def run_ablation_study(img, sat_scale=1.5, nlm_h=6, median_k=3, clahe_clip=1.1,
       no_saturation       : skip saturation boost
       no_unsharp          : skip unsharp masking
       no_fold_suppression : skip fold line suppression
+      no_deblur           : skip deblurring step
+      no_edge_enhance     : skip adaptive edge enhancement
     """
     results = {}
 
@@ -518,7 +736,9 @@ def run_ablation_study(img, sat_scale=1.5, nlm_h=6, median_k=3, clahe_clip=1.1,
                           spot_min_frac=spot_min_frac,
                           inpaint_radius=inpaint_radius,
                           use_fold_suppression=True,
-                          use_multiscale_clahe=True)
+                          use_multiscale_clahe=True,
+                          use_deblur=use_deblur,
+                          use_adaptive_sharpen=use_adaptive_sharpen)
     results['full_pipeline'] = score(full)
 
     # --- Remove denoising ---
@@ -590,35 +810,50 @@ def run_ablation_study(img, sat_scale=1.5, nlm_h=6, median_k=3, clahe_clip=1.1,
                              sat_scale_override=sat_scale_override,
                              unsharp_amount=unsharp_amount,
                              use_fold_suppression=False,
-                             use_multiscale_clahe=True)
+                             use_multiscale_clahe=True,
+                             use_deblur=use_deblur,
+                             use_adaptive_sharpen=use_adaptive_sharpen)
     results['no_fold_suppression'] = score(no_fold)
+    
+    # --- Remove deblurring ---
+    no_deblur_img = restore_image(img, sat_scale=sat_scale, nlm_h=nlm_h,
+                                   median_k=median_k, clahe_clip=clahe_clip,
+                                   sat_scale_override=sat_scale_override,
+                                   unsharp_amount=unsharp_amount,
+                                   use_fold_suppression=True,
+                                   use_multiscale_clahe=True,
+                                   use_deblur=False,
+                                   use_adaptive_sharpen=use_adaptive_sharpen)
+    results['no_deblur'] = score(no_deblur_img)
 
     return results
 
 
 def print_ablation_table(ablation_results):
     """Print ablation study results as a formatted table."""
-    print('\n' + '='*65)
-    print(f"{'Variant':<25} {'BRISQUE':>10} {'NIQE':>10} {'Note'}")
-    print('='*65)
+    print('\n' + '='*75)
+    print(f"{'Variant':<30} {'BRISQUE':>10} {'NIQE':>10} {'Note'}")
+    print('='*75)
     order = ['original', 'full_pipeline', 'no_denoising', 'no_white_balance',
-             'no_clahe', 'no_saturation', 'no_unsharp', 'no_fold_suppression']
+             'no_clahe', 'no_saturation', 'no_unsharp', 'no_fold_suppression',
+             'no_deblur']
     notes = {
         'original':           'No processing',
-        'full_pipeline':      'All steps active ← best',
-        'no_denoising':       'Skip denoise step',
+        'full_pipeline':      'All steps active ← BEST',
+        'no_denoising':       'Skip denoise',
         'no_white_balance':   'Skip white balance',
-        'no_clahe':           'Skip contrast step',
-        'no_saturation':      'Skip saturation boost',
-        'no_unsharp':         'Skip unsharp masking',
+        'no_clahe':           'Skip contrast',
+        'no_saturation':      'Skip saturation',
+        'no_unsharp':         'Skip sharpening',
         'no_fold_suppression':'Skip fold suppression',
+        'no_deblur':          'Skip deblurring',
     }
     for key in order:
         if key in ablation_results:
             _, b, n = ablation_results[key]
-            print(f"{key:<25} {b:>10.4f} {n:>10.4f}   {notes.get(key,'')}")
-    print('='*65)
-    print('Lower BRISQUE and NIQE = better perceptual quality\n')
+            print(f"{key:<30} {b:>10.4f} {n:>10.4f}   {notes.get(key,'')}")
+    print('='*75)
+    print('Lower BRISQUE and NIQE = better image quality\n')
 
 
 # ─────────────────────────────────────────────
@@ -638,6 +873,11 @@ def analyze_and_restore(img, sat_scale=1.25, noise_thresh=10.0, contrast_thresh=
     low_contrast, contrast_score_val = is_low_contrast(img, contrast_thresh=contrast_thresh)
     info['is_low_contrast'] = low_contrast
     info['contrast_score'] = contrast_score_val
+    
+    # Blur detection (NEW)
+    blur_level, is_blurred = detect_blur_level(img)
+    info['blur_level'] = blur_level
+    info['is_blurred'] = is_blurred
 
     # Colorfulness info
     cf = colorfulness_metric(img)

@@ -1,56 +1,23 @@
 # 🖼️ Color Restoration of Old and Damaged Photographs
 
-Advanced Digital Image Processing (DIP) pipeline to restore faded, noisy, or dust‑spotted historical photographs using OpenCV and NumPy — no deep learning required.
+Advanced Digital Image Processing (DIP) pipeline to restore faded, noisy, or dust‑spotted historical photographs using OpenCV and NumPy.
 
 ---
 
 ## 📋 Table of Contents
 
-1. [Why This Project?](#-why-this-project)
-2. [What Makes This Unique?](#-what-makes-this-project-unique)
-3. [What This Project Does](#what-this-project-does)
-4. [Quick Start](#quick-start)
-5. [Requirements](#-requirements)
-6. [Project Structure](#project-structure)
-7. [Results — Before vs After](#-results--before-vs-after)
-8. [Complete Pipeline Flowchart](#complete-pipeline-flowchart)
-9. [Algorithms & Methods](#algorithms--methods)
-10. [Detailed Algorithm Explanations](#detailed-algorithm-explanations)
-11. [Usage Examples](#usage-examples)
-12. [Parameter Tuning Guide](#parameter-tuning-guide)
-13. [Performance Tips](#performance-tips)
-14. [Troubleshooting](#troubleshooting)
-15. [Extensions & Improvements](#extensions--improvements)
-16. [Release Checklist](#release-checklist)
-
----
-
-## 💡 Why This Project?
-
-Old photographs degrade over time due to several physical and chemical processes:
-
-- **Noise** — Film grain, scanner artifacts, or digital noise
-- **Color fading** — Yellowing, sepia toning, or complete color loss
-- **Physical damage** — Fold creases, dust spots, scratches
-- **Low contrast** — Details become invisible as photos age
-
-This project provides a **fully automated, adaptive pipeline** to restore such photographs using classical image processing — making it fast, interpretable, and deployable without any GPU or training data.
-
----
-
-## 🚀 What Makes This Project Unique?
-
-Most restoration tools apply the same fixed settings to every image. This pipeline is different:
-
-| Feature | Common Tools | This Project |
-|---|---|---|
-| White Balance | Fixed correction | **Adaptive** — driven by colorfulness score |
-| Contrast Enhancement | Single-pass CLAHE | **Multi-Scale** — 3 tile sizes blended |
-| Physical Damage | Generic inpainting | **Fold-specific** — Hough Transform detects creases |
-| Quality Evaluation | PSNR/SSIM only | **+ BRISQUE/NIQE** — no reference needed |
-| Proof of Contribution | None | **Ablation Study** — each step proven useful |
-
-> This makes it suitable for publication at student-led conferences (IEEE, CVPR Workshops) and strong enough for viva and interview discussions.
+1. [What This Project Does](#what-this-project-does)
+2. [Quick Start](#quick-start)
+3. [Project Structure](#project-structure)
+4. [Complete Pipeline Flowchart](#complete-pipeline-flowchart)
+5. [Algorithms & Methods](#algorithms--methods)
+6. [Detailed Algorithm Explanations](#detailed-algorithm-explanations)
+7. [Usage Examples](#usage-examples)
+8. [Parameter Tuning Guide](#parameter-tuning-guide)
+9. [Performance Tips](#performance-tips)
+10. [Troubleshooting](#troubleshooting)
+11. [Extensions & Improvements](#extensions--improvements)
+12. [Release Checklist](#release-checklist)
 
 ---
 
@@ -584,7 +551,7 @@ wb_weight = adaptive_wb_weight(cf)      # e.g. 0.37 = only 37% correction
 result    = blend(0.63 × original, 0.37 × white_balanced)
 ```
 
-A very faded image (cf=8) gets 68% correction. A vivid image (cf=55) gets only 25% correction. This **Contrast-Aware Adaptive Weighting Scheme** is the novel contribution of this pipeline.
+A very faded image (cf=8) gets 68% correction. A vivid image (cf=55) gets only 25% correction. This is the **novel contribution** of this pipeline.
 
 ---
 

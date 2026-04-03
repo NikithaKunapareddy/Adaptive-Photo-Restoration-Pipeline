@@ -30,7 +30,8 @@ matplotlib.use('Agg')  # Use non-interactive backend — fixes MemoryError on la
 import matplotlib.pyplot as plt
 from restoration import (restore_image, analyze_and_restore,
                           run_ablation_study, print_ablation_table,
-                          mse, psnr, ssim, colorfulness_metric, adaptive_wb_weight)
+                          mse, psnr, ssim, colorfulness_metric, adaptive_wb_weight,
+                          detect_blur_level)
 
 
 def process_all(input_dir, output_dir, display=True, run_ablation=False):
@@ -52,22 +53,78 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False):
                 continue
 
             # Adaptive analysis
+            blur_level, is_blurred = detect_blur_level(img)
             _, info = analyze_and_restore(img)
-
-            # Tuned parameters for warm old photo restoration
-            mild_params = dict(
-                nlm_h=6,
-                median_k=3,
-                clahe_clip=1.1,
-                sat_scale_override=1.5,
-                unsharp_amount=0.3,
-                spot_thresh=50,
-                spot_blur=9,
-                spot_min_frac=1e-4,
-                inpaint_radius=2,
-                use_fold_suppression=True,
-                use_multiscale_clahe=True,
-            )
+            
+            # Adaptive parameters based on blur level - BALANCED approach
+            if blur_level < 100:
+                # Very blurry image - balanced restoration
+                mild_params = dict(
+                    nlm_h=8,
+                    median_k=3,
+                    clahe_clip=1.4,
+                    sat_scale_override=1.5,
+                    unsharp_amount=0.5,
+                    spot_thresh=50,
+                    spot_blur=9,
+                    spot_min_frac=1e-4,
+                    inpaint_radius=2,
+                    use_fold_suppression=True,
+                    use_multiscale_clahe=True,
+                    use_deblur=True,
+                    use_adaptive_sharpen=True,
+                )
+            elif blur_level < 200:
+                # Moderately blurry - mild-moderate restoration
+                mild_params = dict(
+                    nlm_h=7,
+                    median_k=3,
+                    clahe_clip=1.3,
+                    sat_scale_override=1.5,
+                    unsharp_amount=0.4,
+                    spot_thresh=50,
+                    spot_blur=9,
+                    spot_min_frac=1e-4,
+                    inpaint_radius=2,
+                    use_fold_suppression=True,
+                    use_multiscale_clahe=True,
+                    use_deblur=True,
+                    use_adaptive_sharpen=True,
+                )
+            elif blur_level < 500:
+                # Slightly blurry - gentle restoration
+                mild_params = dict(
+                    nlm_h=6,
+                    median_k=3,
+                    clahe_clip=1.2,
+                    sat_scale_override=1.5,
+                    unsharp_amount=0.3,
+                    spot_thresh=50,
+                    spot_blur=9,
+                    spot_min_frac=1e-4,
+                    inpaint_radius=2,
+                    use_fold_suppression=True,
+                    use_multiscale_clahe=True,
+                    use_deblur=True,
+                    use_adaptive_sharpen=True,
+                )
+            else:
+                # Sharp - standard gentle restoration
+                mild_params = dict(
+                    nlm_h=6,
+                    median_k=3,
+                    clahe_clip=1.1,
+                    sat_scale_override=1.5,
+                    unsharp_amount=0.3,
+                    spot_thresh=50,
+                    spot_blur=9,
+                    spot_min_frac=1e-4,
+                    inpaint_radius=2,
+                    use_fold_suppression=True,
+                    use_multiscale_clahe=True,
+                    use_deblur=False,
+                    use_adaptive_sharpen=True,
+                )
 
             mild_variant = restore_image(img, sat_scale=1.5, **mild_params)
 
@@ -93,11 +150,15 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False):
                 cond += ' + Low-Contrast'
             if info.get('is_grayscale'):
                 cond += ' + Grayscale'
+            if info.get('is_blurred'):
+                cond += ' + Blurred'
 
             cf   = info.get('colorfulness', 0.0)
             wb_w = info.get('wb_weight_used', 0.0)
+            blur_lvl = info.get('blur_level', 0.0)
 
             logging.info('Detected condition  : %s', cond)
+            logging.info('Blur level          : %.2f  (Blurry threshold: 200)', blur_lvl)
             logging.info('Colorfulness        : %.2f  →  WB weight used: %.2f', cf, wb_w)
             logging.info('Noise level         : %.2f,  Contrast score: %.2f',
                          info.get('noise_level', 0), info.get('contrast_score', 0))
