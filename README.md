@@ -382,19 +382,8 @@ Before any processing, the pipeline analyzes the image and decides which steps n
 if estimate_noise(img) > 10.0:
     → Non-Local Means (h=6)   ← for grainy/noisy images
 else:
-    → Median Blur (k=3)        ← for clean images, much faster
+    denoise = cv2.medianBlur(img, k=3)
 ```
-
-#### Non-Local Means (NLM)
-- **How it works:** For every pixel, find similar patches across the entire image and average them. Not just nearby pixels — patches from anywhere in the image.
-- **Why it's better than Gaussian:** Preserves edges and fine texture. Gaussian blurs everything equally.
-- **OpenCV:** `cv2.fastNlMeansDenoisingColored(img, h=6, hColor=6)`
-- **Parameter `h`:** Higher = stronger denoising but risks "plastic" look
-
-#### Median Blur
-- **How it works:** Replace each pixel with the median value of its neighbors.
-- **Why use it:** Perfect for salt-and-pepper noise. Very fast.
-- **When used:** Noise level ≤ 10.0
 
 ---
 
@@ -839,6 +828,6 @@ python main.py --ablation --no-display
 
 **Last Updated:** April 3, 2026
 
-> For questions or improvements, refer to the [Usage Examples](#-usage-examples) or [Parameter Tuning Guide](#️-parameter-tuning-guide).
+For questions or improvements, refer to the [usage examples](#usage-examples) or [parameter tuning guide](#parameter-tuning-guide).
 
 <p align="center"><sub>© 2026 Nikitha Kunapareddy • https://github.com/NikithaKunapareddy/image-color-restoration</sub></p>

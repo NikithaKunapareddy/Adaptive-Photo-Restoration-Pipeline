@@ -42,6 +42,73 @@ def estimate_noise(img):
     return float(np.std(residual))
 
 
+def _local_patch_stats(img, patch_size=32, step=16):
+    """Compute local patch mean and variance for grayscale image.
+
+    Returns arrays of means and variances for patches sampled across the image.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    h, w = gray.shape
+    means = []
+    vars_ = []
+    for y in range(0, max(1, h - patch_size + 1), step):
+        for x in range(0, max(1, w - patch_size + 1), step):
+            patch = gray[y:y + patch_size, x:x + patch_size]
+            means.append(float(np.mean(patch)))
+            vars_.append(float(np.var(patch)))
+    return np.array(means), np.array(vars_)
+
+
+def classify_noise_type(img, patch_size=32, step=16):
+    """Classify dominant noise type using local mean/variance relationship.
+
+    Logic:
+      - For Poisson noise variance grows with local mean (positive correlation)
+      - For Gaussian noise variance independent of mean (low correlation)
+      - If the distribution of local variances is multimodal, return 'mixed'
+
+    Returns (noise_type_str, median_local_variance)
+    where noise_type_str in {'gaussian','poisson','mixed'}.
+    """
+    means, vars_ = _local_patch_stats(img, patch_size=patch_size, step=step)
+    if len(means) < 5:
+        # Too small to decide — fall back to global estimate
+        return ('gaussian', float(np.median(vars_)) if len(vars_) else 0.0)
+
+    # Pearson correlation between mean and variance
+    mean_m = np.mean(means)
+    var_m = np.mean(vars_)
+    cov = np.mean((means - mean_m) * (vars_ - var_m))
+    denom = (np.std(means) * np.std(vars_) + 1e-12)
+    corr = float(cov / denom)
+
+    # Check multimodality (simple peak count in histogram of variances)
+    hist, edges = np.histogram(vars_, bins=8)
+    peaks = np.sum(hist > (np.mean(hist) + np.std(hist)))
+
+    if peaks > 1:
+        return ('mixed', float(np.median(vars_)), corr)
+    if corr > 0.55:
+        return ('poisson', float(np.median(vars_)), corr)
+    return ('gaussian', float(np.median(vars_)), corr)
+
+
+def anscombe_transform(img):
+    """Apply Anscombe transform to stabilize Poisson noise (per-channel)."""
+    img_f = img.astype(np.float32)
+    return 2.0 * np.sqrt(img_f + 3.0 / 8.0)
+
+
+def inverse_anscombe(transformed):
+    """Approximate inverse Anscombe transform (per-channel).
+
+    Uses a simple unbiased approximation and clamps to valid range.
+    """
+    inv = ((transformed / 2.0) ** 2) - 1.0 / 8.0
+    inv = np.clip(inv, 0.0, 255.0)
+    return inv.astype(np.uint8)
+
+
 def contrast_score(img):
     """Compute a simple contrast score (stddev of luminance)."""
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -394,12 +461,32 @@ def adaptive_wb_weight(colorfulness, min_weight=0.25, max_weight=0.70):
 
     Returns a float between min_weight and max_weight.
     """
-    # Normalize colorfulness to 0–1 range (0=faded, 1=colorful)
-    # Typical range of colorfulness is 0–100
+    # Keep existing signature for backward compatibility — map colorfulness → weight
     norm = np.clip(colorfulness / 60.0, 0.0, 1.0)
-
-    # As colorfulness increases, WB weight decreases
     weight = max_weight - norm * (max_weight - min_weight)
+    return float(weight)
+
+
+def entropy_metric(img, nbins=256):
+    """Compute image entropy from grayscale histogram (bits scaled by ln(2))."""
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    hist, _ = np.histogram(gray.flatten(), bins=nbins, range=(0, 256), density=True)
+    # Avoid log(0)
+    hist = hist + 1e-12
+    ent = -np.sum(hist * np.log2(hist))
+    return float(ent)
+
+
+def adaptive_wb_weight_entropy(entropy_val, min_weight=0.25, max_weight=0.70,
+                                min_ent=4.0, max_ent=8.0):
+    """Compute white-balance weight from image entropy.
+
+    Intuition: High entropy (many edges/colors) → Gray-World more reliable → increase weight.
+    The entropy range is clamped between `min_ent` and `max_ent` and mapped to [min_weight,max_weight].
+    """
+    norm = np.clip((entropy_val - min_ent) / (max_ent - min_ent), 0.0, 1.0)
+    # As entropy increases, weight increases (Gray-World more trusted)
+    weight = min_weight + norm * (max_weight - min_weight)
     return float(weight)
 
 
@@ -425,11 +512,13 @@ def white_balance_adaptive(img):
 
     Returns (balanced_img, colorfulness_value, wb_weight_used)
     """
-    cf = colorfulness_metric(img)
-    wb_weight = adaptive_wb_weight(cf)
+    # Use entropy-based reliability to compute WB blend weight
+    ent = entropy_metric(img)
+    wb_weight = adaptive_wb_weight_entropy(ent)
     wb = white_balance_grayworld(img)
     result = cv2.addWeighted(img, 1.0 - wb_weight, wb, wb_weight, 0)
-    return result, cf, wb_weight
+    # Also return entropy for logging/analysis
+    return result, ent, wb_weight
 
 
 def white_balance(img):
@@ -628,14 +717,32 @@ def restore_image(img, sat_scale=1.25, nlm_h=10, median_k=5, clahe_clip=1.1,
         img_deblur = img
     
     # Step 2: Denoising
-    noise_lvl = estimate_noise(img_deblur)
-    if noise_lvl > 10.0:
-        denoise = nl_means_denoise(img_deblur, h=nlm_h, hColor=nlm_h)
+    # Use multimodal noise classifier to choose denoising strategy
+    noise_type, median_var, noise_corr = classify_noise_type(img_deblur)
+    if noise_type == 'poisson':
+        # Stabilize with Anscombe, denoise, then inverse transform
+        try:
+            A = anscombe_transform(img_deblur)
+            # Convert to uint8 for NLM (approximation) — keep dynamic range
+            A_uint8 = np.clip(A, 0, 255).astype(np.uint8)
+            A_denoised = nl_means_denoise(A_uint8, h=nlm_h, hColor=nlm_h)
+            denoise = inverse_anscombe(A_denoised)
+        except Exception:
+            # Fallback to robust median if anything fails
+            denoise = cv2.medianBlur(img_deblur, median_k)
+    elif noise_type == 'mixed':
+        # Mixed noise — use stronger NLM settings
+        denoise = nl_means_denoise(img_deblur, h=int(nlm_h * 1.2), hColor=int(nlm_h * 1.2))
     else:
-        denoise = cv2.medianBlur(img_deblur, median_k)
+        # Gaussian-like noise — rely on estimated noise level
+        noise_lvl = estimate_noise(img_deblur)
+        if noise_lvl > 10.0:
+            denoise = nl_means_denoise(img_deblur, h=nlm_h, hColor=nlm_h)
+        else:
+            denoise = cv2.medianBlur(img_deblur, median_k)
 
-    # Step 3: Adaptive white balance (colorfulness-based blend weight)
-    result, colorfulness, wb_weight = white_balance_adaptive(denoise)
+    # Step 3: Adaptive white balance (entropy-based reliability)
+    result, entropy_val, wb_weight = white_balance_adaptive(denoise)
 
     # Step 4: Spot detection & inpainting
     mask, have_spots = detect_spots_mask(result, thresh=spot_thresh,
@@ -881,9 +988,15 @@ def analyze_and_restore(img, sat_scale=1.25, noise_thresh=10.0, contrast_thresh=
 
     # Colorfulness info
     cf = colorfulness_metric(img)
-    wb_w = adaptive_wb_weight(cf)
+    ent = entropy_metric(img)
+    # noise classifier
+    ntype, _, corr = classify_noise_type(img)
     info['colorfulness'] = cf
-    info['wb_weight_used'] = wb_w
+    info['entropy'] = ent
+    info['noise_type'] = ntype
+    info['noise_corr'] = corr
+    # For compatibility also store a wb_weight estimate
+    info['wb_weight_used'] = adaptive_wb_weight_entropy(ent)
 
     restored = restore_image(img, sat_scale=sat_scale)
 

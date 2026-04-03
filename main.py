@@ -152,14 +152,20 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False):
                 cond += ' + Grayscale'
             if info.get('is_blurred'):
                 cond += ' + Blurred'
-
             cf   = info.get('colorfulness', 0.0)
             wb_w = info.get('wb_weight_used', 0.0)
             blur_lvl = info.get('blur_level', 0.0)
+            ntype = info.get('noise_type', 'unknown')
+            ent   = info.get('entropy', 0.0)
+
+            # Append noise type to the human-readable condition summary
+            if ntype and ntype != 'unknown':
+                cond += f' + Noise:{ntype}'
 
             logging.info('Detected condition  : %s', cond)
             logging.info('Blur level          : %.2f  (Blurry threshold: 200)', blur_lvl)
             logging.info('Colorfulness        : %.2f  →  WB weight used: %.2f', cf, wb_w)
+            logging.info('Noise type          : %s  Entropy: %.2f', ntype, ent)
             logging.info('Noise level         : %.2f,  Contrast score: %.2f',
                          info.get('noise_level', 0), info.get('contrast_score', 0))
             logging.info('MSE: %.2f,  PSNR: %.2f dB,  SSIM: %.4f',
@@ -192,7 +198,13 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False):
             if display:
                 try:
                     _save_comparison(img, mild_variant, cf, wb_w,
-                                     os.path.join(output_dir, f'comparison_{fname}'))
+                                     os.path.join(output_dir, f'comparison_{fname}'),
+                                     noise_type=ntype, entropy_val=ent, blur_level=blur_lvl,
+                                     condition=cond,
+                                     noise_level=info.get('noise_level'),
+                                     contrast_score=info.get('contrast_score'),
+                                     mse_val=info.get('mse'), psnr_val=info.get('psnr'), ssim_val=info.get('ssim'),
+                                     noise_corr=info.get('noise_corr'))
                     logging.info('Comparison image saved: comparison_%s', fname)
                 except Exception:
                     logging.exception('Error saving comparison for %s', fname)
@@ -202,49 +214,83 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False):
             continue
 
 
-def _save_comparison(img, mild_variant, cf, wb_w, out_path):
-    """Save side-by-side original vs restored comparison image.
+def _save_comparison(img, mild_variant, cf, wb_w, out_path,
+                     noise_type=None, entropy_val=None, blur_level=None, condition=None,
+                     noise_level=None, contrast_score=None, mse_val=None, psnr_val=None, ssim_val=None,
+                     noise_corr=None):
+    """Save side-by-side original vs restored comparison image with full diagnostics.
 
-    Uses Agg backend (no screen needed) — avoids MemoryError on large images.
-    Downscales large images before plotting to stay within memory limits.
+    Uses a multiline suptitle to ensure all diagnostics are visible and not clipped.
     """
-    # Downscale if image is too large (max 1000px wide per panel)
-    max_width = 1000
+    # Downscale if image is too large (max 1200px wide)
+    max_width = 1200
     h, w = img.shape[:2]
     if w > max_width:
-        scale   = max_width / w
-        new_w   = int(w * scale)
-        new_h   = int(h * scale)
-        img_display     = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        scale = max_width / w
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        img_display = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
         variant_display = cv2.resize(mild_variant, (new_w, new_h), interpolation=cv2.INTER_AREA)
     else:
-        img_display     = img
+        img_display = img
         variant_display = mild_variant
 
     orig_rgb = cv2.cvtColor(img_display, cv2.COLOR_BGR2RGB)
     rest_rgb = cv2.cvtColor(variant_display, cv2.COLOR_BGR2RGB)
 
-    fig, axes = plt.subplots(1, 2, figsize=(10, 5), dpi=100)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6), dpi=100)
 
     axes[0].imshow(orig_rgb)
     axes[0].set_title('Original Image', fontsize=13)
     axes[0].axis('off')
 
     axes[1].imshow(rest_rgb)
-    axes[1].set_title(
-        f'Restored (Mild)\nColorfulness={cf:.1f}  WB weight={wb_w:.2f}',
-        fontsize=12)
+    axes[1].set_title('Restored Image', fontsize=13)
     axes[1].axis('off')
 
-    # Force same scale on both panels
-    axes[0].set_xlim(0, orig_rgb.shape[1])
-    axes[0].set_ylim(orig_rgb.shape[0], 0)
-    axes[1].set_xlim(0, orig_rgb.shape[1])
-    axes[1].set_ylim(orig_rgb.shape[0], 0)
+    # Build a nicely formatted diagnostics box (multi-line, labeled)
+    # Clean condition string (remove appended noise tag if present)
+    if condition is None:
+        detected = 'Detected Condition: -'
+    else:
+        detected = condition.split(' + Noise:')[0]
+        if not detected.startswith('Detected'):
+            detected = 'Detected Condition: ' + detected
+
+    # Nicely formatted numeric display
+    blur_str = f"{blur_level:.2f}" if isinstance(blur_level, (int, float)) else '-'
+    ent_str = f"{entropy_val:.2f}" if isinstance(entropy_val, (int, float)) else '-'
+    wb_str = f"{wb_w:.2f}"
+    noise_corr_str = f"{noise_corr:.2f}" if isinstance(noise_corr, (int, float)) else '-'
+    noise_level_str = f"{noise_level:.2f}" if isinstance(noise_level, (int, float)) else '-'
+    contrast_str = f"{contrast_score:.2f}" if isinstance(contrast_score, (int, float)) else '-'
+    mse_str = f"{mse_val:.2f}" if isinstance(mse_val, (int, float)) else '-'
+    psnr_str = f"{psnr_val:.2f} dB" if isinstance(psnr_val, (int, float)) else '-'
+    ssim_str = f"{ssim_val:.4f}" if isinstance(ssim_val, (int, float)) else '-'
+
+    line1 = f"{detected}"
+    line2 = f"Blur Level: {blur_str}  (Thresh: 200)"
+    line3 = f"Image Entropy: {ent_str}  →  WB Weight: {wb_str}"
+    line4 = f"Noise Type: {noise_type or '-'}  (Corr: {noise_corr_str})"
+    line5 = f"Noise Level: {noise_level_str}  , Contrast: {contrast_str}"
+    line6 = f"MSE: {mse_str}  , PSNR: {psnr_str}  , SSIM: {ssim_str}"
+
+    box_text = '\n'.join([line1, line2, line3, line4, line5, line6])
+
+    # Header
+    plt.suptitle('Image Analysis Details', fontsize=16, y=0.995)
+
+    # Centered beige rounded box below the title
+    fig.text(0.5, 0.90, box_text,
+             ha='center', va='top', fontsize=10,
+             bbox=dict(boxstyle='round,pad=0.6', facecolor='#f5f0d6', edgecolor='black', linewidth=1.0))
+
+    # Make room for the box so it doesn't overlap images
+    plt.subplots_adjust(top=0.80)
 
     plt.tight_layout()
     plt.savefig(out_path, dpi=100, bbox_inches='tight')
-    plt.close(fig)  # Always close figure to free memory
+    plt.close(fig)
 
 
 def _save_ablation_grid(ablation_results, out_path):
