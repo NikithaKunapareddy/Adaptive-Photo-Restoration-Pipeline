@@ -1,7 +1,7 @@
 # 🖼️ Historical Photograph Restoration — Adaptive Image Processing 
 
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
-[![OpenCV](https://img.shields.io/badge/OpenCV-4.x-green?logo=opencv&Historical Photograph Restoration — Adaptive Image Processing logoColor=white)](https://opencv.org/)
+[![OpenCV](https://img.shields.io/badge/OpenCV-4.x-green?logo=opencv&logoColor=white)](https://opencv.org/)
 [![NumPy](https://img.shields.io/badge/NumPy-1.x-orange?logo=numpy&logoColor=white)](https://numpy.org/)
 [![GitHub](https://img.shields.io/badge/GitHub-NikithaKunapareddy-black?logo=github&logoColor=white)](https://github.com/NikithaKunapareddy/image-color-restoration)
 [![License](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE)
