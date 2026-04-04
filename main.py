@@ -51,7 +51,9 @@ from restoration import (restore_image, analyze_and_restore,
                           classify_noise_type, entropy_metric, adaptive_wb_weight_entropy,
                           optimize_parameters,           # #10
                           estimate_noise_advanced,       # #12
-                          contrast_score, colorfulness_metric)
+                          contrast_score, colorfulness_metric,
+                          detect_fading, adaptive_preprocess,  # #16
+                          estimate_noise)  # #21
 
 
 # Maximum image side length for in-memory processing
@@ -197,9 +199,37 @@ def restore_with_cnn(img, model_path=None):
                            sat_scale_override=1.5, unsharp_amount=0.3)
 
 
+# ── Improvement #21: Failure Case Analysis ─────────────────────────────────────
+def detect_failure_case(info, mild_variant, img):
+    """Detect if the restoration likely failed or produced poor results."""
+    reasons = []
+
+    # Check SSIM drop — restoration made structure worse
+    if info.get('ssim', 1.0) < 0.35:
+        reasons.append(f"Very low SSIM ({info['ssim']:.3f}) — structural damage")
+
+    # Check PSNR — very low means large pixel difference
+    if info.get('psnr', 99.0) < 15.0:
+        reasons.append(f"Low PSNR ({info['psnr']:.2f} dB) — large pixel deviation")
+
+    # Check if image is too blurry to restore
+    if info.get('blur_level', 999) < 30:
+        reasons.append(f"Extreme blur ({info['blur_level']:.1f}) — beyond classical recovery")
+
+    # Check if still very noisy after restoration
+    try:
+        post_noise = estimate_noise(mild_variant)
+        if post_noise > 15.0:
+            reasons.append(f"High residual noise ({post_noise:.1f}) after denoising")
+    except Exception:
+        pass  # Silently skip noise check if estimation fails
+
+    return reasons
+
+
 # ── Main processing loop ───────────────────────────────────────────────────────
 def process_all(input_dir, output_dir, display=True, run_ablation=False,
-                debug=False, single_file=None, mode='legacy'):
+                debug=False, single_file=None, mode='legacy', run_benchmark=False):
     os.makedirs(output_dir, exist_ok=True)
 
     exts = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif')
@@ -275,8 +305,10 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False,
                     os.path.dirname(__file__), 'noise_model.h5'))
                 
                 # Placeholder values for display
+                sharpness = float(np.clip(blur_level / 500.0, 0.0, 1.0))
                 diff_score = opt_score = 0.0
                 diff_level = 'cnn'
+                diff_intensity = {'nlm_h': 6, 'unsharp_amount': 0.3}
                 mild_params = {'nlm_h': 6, 'clahe_clip': 1.1, 'unsharp_amount': 0.3,
                               'sat_scale_override': 1.5}
                 opt_params = {'wb_weight': 0.5, 'sat_scale': 1.5, 'clahe_clip': 1.1}
@@ -298,8 +330,10 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False,
                 # Blend 50/50
                 mild_variant = cv2.addWeighted(heuristic_result, 0.5, cnn_result, 0.5, 0)
                 
+                sharpness = float(np.clip(blur_level / 500.0, 0.0, 1.0))
                 diff_score = opt_score = 0.0
                 diff_level = 'hybrid'
+                diff_intensity = {'nlm_h': mild_params.get('nlm_h', 6), 'unsharp_amount': mild_params.get('unsharp_amount', 0.3)}
                 opt_params = {'wb_weight': 0.5, 'sat_scale': 1.5, 'clahe_clip': 1.1}
                 patch_noise = freq_noise = combined_noise = 0.0
                 noise_decision = 'Hybrid'
@@ -310,8 +344,10 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False,
                 mild_params = compute_params_continuous(blur_level)
                 mild_variant = restore_image(img_proc, **mild_params)
                 
+                sharpness = float(np.clip(blur_level / 500.0, 0.0, 1.0))
                 diff_score = opt_score = 0.0
                 diff_level = 'heuristic'
+                diff_intensity = {'nlm_h': mild_params.get('nlm_h', 6), 'unsharp_amount': mild_params.get('unsharp_amount', 0.3)}
                 opt_params = {'wb_weight': 0.5, 'sat_scale': 1.5, 'clahe_clip': 1.1}
                 patch_noise = freq_noise = combined_noise = 0.0
                 noise_decision = '-'
@@ -403,6 +439,12 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False,
                 logging.exception('Failed to compute metrics')
 
             # Log results
+            # Detect degradation type (#16)
+            try:
+                _, degradation_detected = adaptive_preprocess(img_proc)
+            except Exception:
+                degradation_detected = 'unknown'
+            
             cond = 'Noisy' if info.get('is_noisy') else 'Clean'
             if info.get('is_low_contrast'):
                 cond += ' + Low-Contrast'
@@ -410,6 +452,10 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False,
                 cond += ' + Grayscale'
             if info.get('is_blurred'):
                 cond += ' + Blurred'
+            
+            # Add degradation type if detected
+            if degradation_detected != 'normal' and degradation_detected != 'unknown':
+                cond += f' + [{degradation_detected.upper()}]'
 
             cf       = info.get('colorfulness', 0.0)
             wb_w     = info.get('wb_weight_used', 0.0)
@@ -426,6 +472,21 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False,
             logging.info('MSE: %.2f,  PSNR: %.2f dB,  SSIM: %.4f',
                          info.get('mse', 0), info.get('psnr', 0), info.get('ssim', 0))
 
+            # ── Improvement #21: Failure Case Analysis ──────────────────────────
+            failure_reasons = detect_failure_case(info, mild_variant, img_proc)
+            if failure_reasons:
+                logging.warning('⚠ FAILURE CASE DETECTED for %s:', fname)
+                for r in failure_reasons:
+                    logging.warning('   → %s', r)
+                # Save to a separate failure log
+                fail_log = os.path.join(output_dir, 'failure_cases.txt')
+                with open(fail_log, 'a') as f:
+                    f.write(f'\n{fname}:\n')
+                    for r in failure_reasons:
+                        f.write(f'  - {r}\n')
+            else:
+                logging.info('✓ Restoration quality: acceptable')
+
             # ── Ablation Study ─────────────────────────────────────────────
             if run_ablation:
                 logging.info('Running ablation study for %s ...', fname)
@@ -439,6 +500,17 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False,
                 ablation_out = os.path.join(output_dir, f'ablation_{fname}')
                 _save_ablation_grid(ablation_results, ablation_out)
                 logging.info('Ablation grid saved to: %s', ablation_out)
+
+            # ── Improvement #15: Benchmark Against Classical Methods ───────
+            if run_benchmark:
+                logging.info('Running benchmark comparison for %s ...', fname)
+                try:
+                    from restoration import run_benchmark_comparison, print_benchmark_table
+                    bench_results = run_benchmark_comparison(img_proc)
+                    print_benchmark_table(bench_results)
+                    logging.info('Benchmark comparison completed for: %s', fname)
+                except Exception:
+                    logging.exception('Benchmark comparison failed for %s', fname)
 
             # ── Save comparison image ──────────────────────────────────────
             if display:
@@ -474,7 +546,7 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False,
                         freq_noise=freq_noise,                         # #12
                         combined_noise=combined_noise,                 # #12
                         noise_decision=noise_decision,                 # #12
-                    )
+                        degradation_detected=degradation_detected)     # #16
                     logging.info('Comparison image saved: comparison_%s', fname)
                 except Exception:
                     logging.exception('Error saving comparison for %s', fname)
@@ -497,7 +569,8 @@ def _save_comparison(img, mild_variant, cf, wb_w, out_path,
                      diff_nlm=None, diff_clahe=None,                   # #11
                      diff_sat=None, diff_unsharp=None,                 # #11
                      patch_noise=None, freq_noise=None,                # #12
-                     combined_noise=None, noise_decision=None):        # #12
+                     combined_noise=None, noise_decision=None,         # #12
+                     degradation_detected=None):                       # #16
     """Save side-by-side original vs restored comparison image with diagnostics."""
 
     max_width = 1200
@@ -560,6 +633,9 @@ def _save_comparison(img, mild_variant, cf, wb_w, out_path,
     fnoise_str  = f"{freq_noise:.2f}"         if isinstance(freq_noise,         (int, float)) else '-'
     cnoise_str  = f"{combined_noise:.2f}"     if isinstance(combined_noise,     (int, float)) else '-'
     ndec_str    = str(noise_decision)         if noise_decision is not None                   else '-'
+    
+    # ── #16 strings ───────────────────────────────────────────────────────
+    deg_str     = str(degradation_detected).upper() if degradation_detected and degradation_detected != 'normal' else '-'
 
     # ── Build box text ─────────────────────────────────────────────────────
     box_text = '\n'.join([
@@ -576,7 +652,6 @@ def _save_comparison(img, mild_variant, cf, wb_w, out_path,
         f"Best  wb={owb_str}   sat={osat_str}   clahe={oclahe_str}   BRISQUE={oscore_str}",
         f"──────── Difficulty-Aware (#11) ──────────────",
         f"Difficulty Score   : {dscore_str}  \u2192  Level: {dlevel_str}",
-        f"Intensity  nlm_h={dnlm_str}   clahe={dclahe_str}   sat={dsat_str}   unsharp={dunsharp_str}",
         f"──────── Noise Estimation (#12) ──────────────",
         f"Patch={pnoise_str}   Freq={fnoise_str}   Combined={cnoise_str}   \u2192 {ndec_str}",
     ])
@@ -650,6 +725,8 @@ if __name__ == '__main__':
                         help='Run ablation study for each image')
     parser.add_argument('--debug',      action='store_true',
                         help='Save debug overlay (green fold lines + red spots)')
+    parser.add_argument('--benchmark',  action='store_true',
+                        help='Run quality benchmark comparison vs classical methods')
     parser.add_argument('--file', '-f', default=None,
                         help='Process a single image file (full path)')
     parser.add_argument('--mode', choices=['legacy', 'difficulty', 'heuristic', 'cnn', 'hybrid'], 
@@ -674,4 +751,5 @@ if __name__ == '__main__':
                 run_ablation=args.ablation,
                 debug=args.debug,
                 single_file=args.file,
-                mode=args.mode)
+                mode=args.mode,
+                run_benchmark=args.benchmark)

@@ -1,0 +1,14 @@
+{
+  "analysis": 0.007045299998329331,
+  "estimate_noise": 0.05278183333333194,
+  "nlm_denoise": 2.274461233333568,
+  "white_balance_adaptive": 0.039199633332221616,
+  "detect_spots_mask": 0.0098254333352088,
+  "inpaint_spots": 0.0007349000006797723,
+  "suppress_fold_lines": 0.01401823333435459,
+  "enhance_contrast_multiscale": 0.029403166665967245,
+  "increase_saturation": 0.020307733332932305,
+  "adaptive_unsharp_mask": 0.0051578666680143215,
+  "restore_image": 2.0295019000016814,
+  "deblur_image": null
+}

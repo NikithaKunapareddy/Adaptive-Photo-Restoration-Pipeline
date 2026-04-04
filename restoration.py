@@ -182,6 +182,120 @@ def entropy_metric(img, nbins=256):
 
 
 # ─────────────────────────────────────────────
+# IMPROVEMENT #16: FADING & LOW-CONTRAST DETECTION + ADAPTIVE PREPROCESSING
+# ─────────────────────────────────────────────
+
+def detect_fading(img):
+    """Detect color fading — low saturation in HSV space.
+    
+    Returns (is_faded, saturation_mean)
+    """
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+    s_channel = hsv[:, :, 1] / 255.0
+    sat_mean = float(np.mean(s_channel))
+    
+    # Images with low average saturation are typically faded
+    # Normal: 0.4-0.7, Faded: <0.35
+    is_faded = sat_mean < 0.35
+    
+    return is_faded, sat_mean
+
+
+def preprocess_faded_image(img):
+    """Boost saturation and contrast for faded images using CLAHE + saturation boost.
+    
+    Operates in HSV space for better color recovery.
+    """
+    # Work in HSV space
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+    h, s, v = cv2.split(hsv)
+    
+    # Boost saturation more conservatively (30% instead of 40%)
+    s = s * 1.3  # 30% saturation boost
+    s = np.clip(s, 0, 255)
+    
+    # Enhance V (brightness) with localized CLAHE
+    v_uint8 = np.uint8(v)
+    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))  # Reduced from 2.5
+    v_enhanced = clahe.apply(v_uint8).astype(np.float32)
+    
+    # Slight blend: 70% preprocessed + 30% original (smoother transition)
+    v_blended = 0.7 * v_enhanced + 0.3 * v
+    
+    # Merge back
+    hsv_enhanced = cv2.merge([h, s, v_blended])
+    result = cv2.cvtColor(np.uint8(hsv_enhanced), cv2.COLOR_HSV2BGR)
+    
+    return result
+
+
+def preprocess_low_contrast_image(img):
+    """Enhance contrast for low-contrast images using adaptive histogram equalization.
+    
+    Preserves color information while boosting contrast.
+    """
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    
+    # CLAHE on L channel with conservative settings
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))  # Reduced from 3.0
+    l_enhanced = clahe.apply(l)
+    
+    # Blend: 80% preprocessed + 20% original
+    l_blended = np.uint8(0.8 * l_enhanced.astype(np.float32) + 0.2 * l.astype(np.float32))
+    
+    # Merge back
+    lab_enhanced = cv2.merge([l_blended, a, b])
+    result = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
+    
+    return result
+
+
+def adaptive_preprocess(img):
+    """Apply adaptive preprocessing based on image degradation type.
+    
+    Detects and corrects:
+    - Fading (low saturation)
+    - Low contrast
+    - Both conditions
+    
+    Returns (preprocessed_image, degradation_type)
+    """
+    import logging
+    
+    # Check for low contrast (avoid naming conflict with function is_low_contrast)
+    contrast_val = contrast_score(img)
+    has_low_contrast = contrast_val < 30.0
+    
+    # Check for fading
+    has_fading, sat_mean = detect_fading(img)
+    
+    if has_fading and has_low_contrast:
+        # Both issues: apply both corrections in sequence
+        result = preprocess_faded_image(img)
+        result = preprocess_low_contrast_image(result)
+        degradation = 'faded+low_contrast'
+        logging.info('    [#16] Detected fading (sat=%.2f) + low contrast (contrast=%.2f)', sat_mean, contrast_val)
+        logging.info('    [#16] Applied: saturation boost + CLAHE both channels')
+    elif has_fading:
+        # Fading only
+        result = preprocess_faded_image(img)
+        degradation = 'faded'
+        logging.info('    [#16] Detected fading (saturation=%.2f) — applying saturation boost', sat_mean)
+    elif has_low_contrast:
+        # Low contrast only
+        result = preprocess_low_contrast_image(img)
+        degradation = 'low_contrast'
+        logging.info('    [#16] Detected low contrast (contrast=%.2f) — applying CLAHE', contrast_val)
+    else:
+        # No issues detected
+        result = img.copy()
+        degradation = 'normal'
+    
+    return result, degradation
+
+
+# ─────────────────────────────────────────────
 # DENOISING
 # ─────────────────────────────────────────────
 
@@ -680,6 +794,7 @@ def restore_image(img, sat_scale=1.25, nlm_h=10, median_k=5, clahe_clip=1.1,
     """Restore image using the full enhanced pipeline.
 
     Steps:
+      0. ADAPTIVE PREPROCESSING (#16) — detect & fix fading/low-contrast
       1. Blur detection
       2. Noise classification + adaptive denoising
       3. Adaptive white balance (entropy-based)
@@ -690,6 +805,19 @@ def restore_image(img, sat_scale=1.25, nlm_h=10, median_k=5, clahe_clip=1.1,
       8. Edge enhancement (blurry images only)
       9. Adaptive unsharp masking
     """
+    # Step 0: Adaptive preprocessing for fading/low-contrast (#16)
+    try:
+        img_preprocessed, degradation_type = adaptive_preprocess(img)
+        if degradation_type != 'normal':
+            import logging
+            logging.info('--- Adaptive Preprocessing (#16) ---')
+            logging.info('  Degradation detected: %s', degradation_type)
+            logging.info('  Applied: saturation boost and/or CLAHE enhancement')
+            img = img_preprocessed
+    except Exception as e:
+        import logging
+        logging.warning('Preprocessing failed: %s', str(e))
+    
     # Step 1: Blur detection
     blur_level, is_blurred = detect_blur_level(img)
 
@@ -1000,3 +1128,57 @@ def intensity_from_difficulty(level):
         'severe': dict(nlm_h=10, clahe_clip=1.5, sat_scale=1.7, unsharp_amount=0.5),
     }
     return presets[level]
+
+
+# ─────────────────────────────────────────────
+# IMPROVEMENT #15: BENCHMARK AGAINST CLASSICAL METHODS
+# ─────────────────────────────────────────────
+
+def restore_histogram_equalization(img):
+    """Classical baseline 1 — simple histogram equalization."""
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    l_eq = cv2.equalizeHist(l)
+    return cv2.cvtColor(cv2.merge([l_eq, a, b]), cv2.COLOR_LAB2BGR)
+
+
+def restore_retinex(img):
+    """Classical baseline 2 — Multi-Scale Retinex."""
+    return msrcr(img, scales=(15, 80, 250))
+
+
+def run_benchmark_comparison(img):
+    """Compare our pipeline against classical baselines.
+    Returns dict: method_name -> (image, brisque, niqe, ssim_val, psnr_val).
+    """
+    results = {}
+
+    orig_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    def evaluate(name, restored):
+        b  = brisque_score(restored)
+        n  = niqe_score(restored)
+        rg = cv2.cvtColor(restored, cv2.COLOR_BGR2GRAY) if len(restored.shape) == 3 else restored
+        s  = ssim(orig_gray, rg)
+        p  = psnr(orig_gray, rg)
+        results[name] = (restored, b, n, s, p)
+
+    evaluate('Original (no processing)', img)
+    evaluate('Histogram Equalization',   restore_histogram_equalization(img))
+    evaluate('Multi-Scale Retinex',      restore_retinex(img))
+    evaluate('Our Pipeline (full)',      restore_image(img, sat_scale=1.5,
+                                           nlm_h=7, median_k=3, clahe_clip=1.2,
+                                           sat_scale_override=1.5,
+                                           unsharp_amount=0.35))
+    return results
+
+
+def print_benchmark_table(results):
+    """Print benchmark comparison table with quality metrics."""
+    print('\n' + '='*90)
+    print(f"{'Method':<35} {'BRISQUE':>12} {'NIQE':>10} {'SSIM':>10} {'PSNR':>10}")
+    print('='*90)
+    for name, (_, b, n, s, p) in results.items():
+        print(f"{name:<35} {b:>12.4f} {n:>10.4f} {s:>10.4f} {p:>10.2f}")
+    print('='*90)
+    print('Lower BRISQUE/NIQE = better quality | Higher SSIM/PSNR = better quality\n')

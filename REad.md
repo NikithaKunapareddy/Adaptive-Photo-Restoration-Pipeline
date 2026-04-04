@@ -189,3 +189,29 @@ Why the CNN didn't help:
 5 images is too small — CNN needs 50+ diverse degraded images to learn
 10 epochs insufficient — needs 20-50 epochs minimum for convergence
 Small dataset = poor generalization — CNN was overfitting to noise patterns, not learning real degradation
+
+
+
+# Benchmark + heuristic mode
+python main.py --benchmark --mode heuristic
+
+# Benchmark + no comparison images (faster)
+python main.py --benchmark --no-display
+
+# Benchmark + single image
+python main.py --benchmark -f dataset/old_images/old.png
+
+# All features (ablation + benchmark)
+python main.py --benchmark --ablation --mode heuristic
+
+
+python robustness_test.py --input dataset/old_images/unnamed.jpg 
+
+ python check_saturation.py
+
+ python main.py --mode heuristic -f dataset/old_images/Photo.jpg  -foe degradation type
+
+ python visual_demo.py --input dataset/old_images/unnamed.jpg -visual demo
+
+
+ python main.py 2>&1 | findstr /I "blur level\|Processing"- failure rate

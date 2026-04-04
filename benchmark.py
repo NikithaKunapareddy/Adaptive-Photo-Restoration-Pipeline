@@ -17,7 +17,7 @@ from restoration import (
     analyze_and_restore, restore_image, detect_blur_level, estimate_noise,
     nl_means_denoise, white_balance_adaptive, detect_spots_mask, inpaint_spots,
     suppress_fold_lines, enhance_contrast_multiscale, increase_saturation,
-    adaptive_unsharp_mask, deblur_image
+    adaptive_unsharp_mask
 )
 
 
