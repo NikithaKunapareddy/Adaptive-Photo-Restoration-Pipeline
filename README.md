@@ -1065,138 +1065,266 @@ Lower BRISQUE and NIQE = better image quality
 
 ## 💻 Comprehensive Usage Examples
 
-### Basic Restoration
+### 🎯 Basic Restoration
 
 ```powershell
-# Default heuristic mode (fastest approach)
+# Default heuristic mode (fastest, no GPU needed)
 python main.py
 
 # Specific pipeline mode
-python main.py --mode heuristic      # Adaptive, CPU-fast (default)
+python main.py --mode heuristic      # ← DEFAULT: Adaptive, CPU-fast
 python main.py --mode difficulty     # Uses difficulty presets (#11)
-python main.py --mode legacy         # Continuous + BRISQUE optimization
-python main.py --mode hybrid         # Heuristic + CNN blended (if trained)
+python main.py --mode legacy         # Continuous + BRISQUE optimization (#9 + #10)
+python main.py --mode hybrid         # Heuristic + CNN blended 50/50 (if trained)
+python main.py --mode cnn            # CNN-only (requires 50+ trained images)
 
 # Single file processing
 python main.py -f dataset/old_images/Photo.jpg
 python main.py --file dataset/old_images/old.png
+python main.py -f dataset/old_images/Photo.jpg -foe degradation_type
 
 # Custom I/O directories
 python main.py --input-dir "D:\old_photos" --output-dir "D:\restored"
+
+# Disable comparison images for faster processing
+python main.py --no-display
+
+# Enable debug overlays (fold lines + spots detection)
+python main.py --debug
 ```
 
-### Benchmarking & Comparison
+### 📊 Benchmarking & Comparison (#15)
+
+**Compare your pipeline against classical image restoration methods:**
 
 ```powershell
-# Compare against classical methods (Histogram Eq, Retinex, etc.)
+# Full benchmark against Histogram Eq, Retinex, etc.
 python main.py --benchmark
 
 # Benchmark with single file
 python main.py --benchmark -f dataset/old_images/old.png
 
-# Benchmark + heuristic mode (fast)
+# Benchmark + heuristic mode (fastest)
 python main.py --benchmark --mode heuristic
 
-# Benchmark without comparison images (faster, just metrics)
+# Benchmark without comparison images (faster, metrics only)
 python main.py --benchmark --no-display
 
-# Benchmark + ablation study + all features
+# All features combined (benchmark + ablation + heuristic)
 python main.py --benchmark --ablation --mode heuristic
+
+# Output table:
+#   ═════════════════════════════════════════════════════════════════
+#   Method                          BRISQUE       NIQE    PSNR
+#   ═════════════════════════════════════════════════════════════════
+#   Original (unprocessed)          12.50         0.85    N/A
+#   Histogram Equalization           9.20         0.62    18.45 dB
+#   MSRCR (Retinex)                  8.95         0.59    17.92 dB
+#   THIS PIPELINE (Adaptive)         6.20         0.42    20.15 dB ← BEST
+#   ═════════════════════════════════════════════════════════════════
 ```
 
-### Robustness Testing
+### 🧪 Robustness Testing (#16)
 
-**Test pipeline against 4 degradation types** (noise, fading, folds, low-contrast):
+**Test pipeline against 4 synthetic degradation types:**
 
 ```powershell
-# Full robustness test with metrics table
+# Full robustness test with detailed table
 python robustness_test.py --input dataset/old_images/unnamed.jpg
 
-# Custom output directory
+# Single image test with custom output
 python robustness_test.py --input dataset/old_images/Photo.jpg --output results/robustness
 
-# Output:
-#   Degradation         BRISQUE Before  BRISQUE After  Improvement
-#   ──────────────────────────────────────────────────────────────
-#   noisy               15.2            8.5            44.1%
-#   faded               18.5            10.2           44.9%
-#   folded              19.1            11.3           40.8%
-#   low_contrast        16.8            8.9            47.0%
+# Output shows recovery percentage for each degradation:
+#   ──────────────────────────────────────────────────────────
+#   Degradation         BRISQUE Before  BRISQUE After  Recovery %
+#   ──────────────────────────────────────────────────────────
+#   noisy               15.2            8.5            44.1% ✓ good
+#   faded               18.5            10.2           44.9% ✓ good
+#   folded              19.1            11.3           40.8% ✓ good
+#   low_contrast        16.8            8.9            47.0% ✓ excellent
+#   ──────────────────────────────────────────────────────────
+
+# Interpretation:
+#   < 30% improvement  → Pipeline struggles with this degradation
+#   30–50% improvement → Good performance (normal range)  ← BEST
+#   > 50% improvement  → Excellent recovery
 ```
 
-### Visual Demonstrations
+### 📸 Visual Demonstrations (#20)
 
-**Step-by-step pipeline visualization** (6-panel grid):
+**Step-by-step pipeline visualization:**
 
 ```powershell
-# Default output to results/visual_demo/
+# Generate 6-panel pipeline steps + zoomed region comparison
 python visual_demo.py --input dataset/old_images/unnamed.jpg
 
 # Custom output directory
 python visual_demo.py --input dataset/old_images/Photo.jpg --output results/my_demo
 
-# Output files:
+# Include visual demo in main pipeline
+python main.py --visual-demo
+
+# Output files created:
 #   {name}_steps.png   → 6 steps (original → WB → spots → folds → CLAHE → restored)
-#   {name}_zoomed.png  → zoomed region before/after comparison
+#   {name}_zoomed.png  → zoomed region before/after comparison (high detail)
 ```
 
-**Zoomed region comparison shows:**
-- Full image with red box highlighting zoom area
-- Detailed zoom-in of original (left) vs restored (right)
-- Perfect for zoom-critical artifacts (fine text, faces, textures)
+**6-panel output sequence:**
+1. **Original** → Input image as-is
+2. **White Balance Correction** → After adaptive color restoration (#18)
+3. **Spot Removal** → After dust/scratch cleanup
+4. **Fold Suppression** → After crease repair (Hough Transform)
+5. **CLAHE Enhancement** → After multi-scale contrast boost (#19)
+6. **Final Restored** → Complete output after sharpening
 
-### Saturation & Color Analysis
+### 🎨 Saturation & Color Analysis
 
 ```powershell
-# Check saturation levels of images
+# Analyze colorfulness and WB weight for all images
 python check_saturation.py
 
-# Output:
+# Output table with color fade severity:
+#   ────────────────────────────────────────────────────────
 #   File                  Colorfulness  WB Weight  Status
 #   ────────────────────────────────────────────────────────
-#   old.png              12.5           0.70       very faded
-#   Photo.jpg            42.3           0.35       well preserved
-#   unnamed.jpg          28.5           0.50       moderately faded
+#   old.png              12.5           0.70       → VERY FADED
+#   Photo.jpg            42.3           0.35       → WELL PRESERVED
+#   unnamed.jpg          28.5           0.50       → MODERATELY FADED
+#   ────────────────────────────────────────────────────────
+
+# Interpretation:
+#   Colorfulness < 15    → Very faded (WB weight 0.70)
+#   Colorfulness 15–33   → Mildly faded (WB weight ~0.60)
+#   Colorfulness 33–45   → Moderately faded (WB weight ~0.45)
+#   Colorfulness > 45    → Well preserved (WB weight 0.25)
 ```
 
-### Failure Rate & Quality Analysis
+### ⚠️ Failure Rate & Quality Analysis (#21)
 
-**Detect which images failed restoration:**
+**Detect which images triggered failure detection:**
 
 ```powershell
-# Run full pipeline and show failures
+# Run pipeline and show failures
 python main.py 2>&1 | findstr /I "FAILURE CASE"
 
 # Example output:
 #   [WARNING] ⚠ FAILURE CASE DETECTED for photo with blur.png:
 #   [WARNING]    → Extreme blur (23.5) — beyond classical recovery
-```
 
-**Count failure images:**
-```powershell
+# Count total failures
 python main.py 2>&1 | findstr /I "FAILURE CASE" | find /c "FAILURE CASE"
+# Output: 1 failed image out of N
 ```
 
-**Analyze blur levels to predict failures:**
+**Analyze blur levels for all images (helps predict failures):**
 
 ```powershell
-# Show blur levels for all images (helps predict failures)
+# Show blur metric for every image processed
 python main.py 2>&1 | findstr /I "Blur level"
 
 # Example output:
-#   [INFO] Blur level          : 71.90  (Blurry threshold: 200)  ← OK
-#   [INFO] Blur level          : 23.46  (Blurry threshold: 200)  ← FAILURE (< 30)
+#   [INFO] Blur level          : 186.96  (Blurry threshold: 200)  ← GOOD (recoverable)
+#   [INFO] Blur level          : 71.90   (Blurry threshold: 200)  ← GOOD (recoverable)
+#   [INFO] Blur level          : 23.46   (Blurry threshold: 200)  ← FAILURE (< 30, unrecoverable)
+#
+# Failure rule: blur_level < 30 → information loss beyond classical recovery
 ```
 
-### Ablation Study (Proof of Contribution)
+**View detailed failure reasons:**
 
 ```powershell
-# Run ablation study — test each component's contribution
+# Check failure_cases.txt for detailed analysis
+type results\restored_images\failure_cases.txt
+
+# Example contents:
+#   photo with blur.png:
+#     - Extreme blur (23.5) — beyond classical recovery
+#     - Severe motion + atmospheric blur → high-frequency detail irreversibly lost
+#     - Classical deconvolution cannot recover (requires deep learning / information not in image)
+#
+#   old_damaged.jpg:
+#     - Very low SSIM (0.28) — structural damage
+#     - PSNR 12.5 dB — large pixel-level deviation
+#     - Pipeline adversely modified image structure
+#     - Recommendation: Manual post-processing or accept degraded result
+```
+
+**Failure Detection Criteria:**
+- **Blur level < 30** → Extreme blur (motion/atmospheric) — information loss irreversible
+- **SSIM < 0.35** → Structural damage — quality too degraded
+- **PSNR < 15.0 dB** → Large pixel deviation — poor fidelity
+- **Residual noise > 15.0** → Denoiser overwhelmed — noise persists
+
+### 🧪 Ablation Study (Proof of Contribution) (#14)
+
+```powershell
+# Run full ablation — test each pipeline component's contribution
 python main.py --ablation
 
-# Output 8-panel grid comparing:
+# Output 8-panel grid for side-by-side quality comparison:
 #   original, full_pipeline, no_denoise, no_white_balance,
 #   no_clahe, no_saturation, no_unsharp, no_fold_suppression
+
+# Console table with metrics:
+#   =================================================================
+#   Variant                   BRISQUE       NIQE   Note
+#   =================================================================
+#   original                  12.5000     0.8500   No processing
+#   full_pipeline              6.2000     0.4200   All steps active ← BEST
+#   no_denoising               9.1000     0.6100   Skip denoise step
+#   no_white_balance           8.8000     0.5900   Skip white balance
+#   no_clahe                   9.5000     0.6400   Skip contrast step
+#   no_saturation              8.1000     0.5500   Skip saturation boost
+#   no_unsharp                 8.4000     0.5700   Skip unsharp masking
+#   no_fold_suppression        7.9000     0.5300   Skip fold suppression
+#   =================================================================
+```
+
+### 🚀 Advanced Workflows
+
+#### Combined Benchmark + Ablation + Heuristic
+
+```powershell
+# Everything at once — benchmark, ablation, and fastest mode
+python main.py --benchmark --ablation --mode heuristic
+
+# This runs:
+#   ✓ Full restoration pipeline
+#   ✓ Comparison vs classical methods (Histogram Eq, Retinex)
+#   ✓ 8-panel ablation study grid
+#   ✓ Quality metrics (BRISQUE, NIQE, PSNR, SSIM)
+#   ✓ Speed optimized with heuristic mode (no BRISQUE grid search)
+```
+
+#### Complete Analysis Pipeline
+
+```powershell
+# 1. Check color analysis
+python check_saturation.py
+
+# 2. Run single image with all diagnostics
+python main.py -f dataset/old_images/Photo.jpg --benchmark --ablation --debug
+
+# 3. Visual step-by-step demo
+python visual_demo.py --input dataset/old_images/Photo.jpg --output results/visual_demo
+
+# 4. Robustness test on same image
+python robustness_test.py --input dataset/old_images/Photo.jpg --output results/robustness
+
+# 5. Analyze blur levels and failures
+python main.py 2>&1 | findstr /I "Blur level\|FAILURE CASE"
+```
+
+#### Batch Processing with Failure Tracking
+
+```powershell
+# Process all images, track failures and blur levels
+python main.py --mode heuristic --no-display 2>&1 | Tee-Object -Variable output
+$output | findstr /I "Processing\|Blur level\|FAILURE CASE"
+
+# Then check summary
+type results\restored_images\failure_cases.txt
 ```
 
 ### Debug Mode (Fold & Spot Detection)
@@ -1264,7 +1392,52 @@ python benchmark.py --input dataset/old_images/old.png --repeats 3
 
 ---
 
-## 🔍 Detailed Analysis Tools
+## � Complete Command Reference
+
+### Core Restoration Commands
+
+| Command | Purpose |
+|---------|---------|
+| `python main.py` | Batch restore all images in `dataset/old_images/` |
+| `python main.py -f FILE` | Restore single image |
+| `python main.py --mode heuristic` | Default: continuous adaptation, no GPU |
+| `python main.py --mode difficulty` | Use difficulty-aware presets (#11) |
+| `python main.py --mode legacy` | Use continuous + BRISQUE grid (#9 + #10) |
+| `python main.py --mode hybrid` | Blend heuristic + CNN if trained |
+| `python main.py --no-display` | Skip comparison image generation (faster) |
+| `python main.py --debug` | Save fold & spot detection overlays |
+| `python main.py --ablation` | Run 8-variant ablation study |
+
+### Quality & Analysis Commands
+
+| Command | Purpose | Output |
+|---------|---------|--------|
+| `python main.py --benchmark` | Compare vs Histogram Eq, Retinex, etc. | Quality metrics table |
+| `python check_saturation.py` | Analyze color fading in all images | Colorfulness table |
+| `python robustness_test.py --input FILE` | Test against 4 degradation types | Recovery % table |
+| `python visual_demo.py --input FILE` | Generate 6-step visual guide | PNG grids |
+
+### Observation & Diagnosis Commands
+
+| Command | Purpose |
+|---------|---------|
+| `python main.py 2>&1` `\| findstr /I "Blur level"` | Show blur metric for all images |
+| `python main.py 2>&1` `\| findstr /I "FAILURE CASE"` | Show which images failed restoration |
+| `type results\restored_images\failure_cases.txt` | View detailed failure reasons |
+
+### Combined Feature Commands
+
+| Scenario | Command |
+|----------|---------|
+| **Fast quality check** | `python main.py --mode heuristic --no-display` |
+| **Full analysis** | `python main.py --benchmark --ablation` |
+| **Visual + Robustness** | `python visual_demo.py --input FILE` && `python robustness_test.py --input FILE` |
+| **Failure detection** | `python main.py 2>&1` `\| findstr /I "FAILURE CASE\|Blur level"` |
+| **Training CNN** | `python train_noise_cnn.py --dataset dataset/old_images --output noise_model.h5` |
+
+---
+
+## �🔍 Detailed Analysis Tools
 
 ### check_saturation.py
 
@@ -1437,6 +1610,191 @@ Correct for most historical photos. "Severe" triggers only when noise + blur + l
 - [ ] Full BRISQUE/NIQE via opencv-contrib (currently approximated)
 - [ ] Parallelize batch processing (`--jobs` flag)
 - [ ] Add comprehensive unit tests
+
+---
+
+## 🎯 Improvements 15–21: Visual Flowcharts
+
+### #15 Benchmark Against Existing Methods
+
+```mermaid
+graph LR
+    A["Original Image"] --> B["Histogram Equalization"]
+    A --> C["MSRCR Retinex"]
+    A --> D["Our Pipeline"]
+    B --> B_Score["BRISQUE: 9.2<br/>NIQE: 0.62"]
+    C --> C_Score["BRISQUE: 8.95<br/>NIQE: 0.59"]
+    D --> D_Score["BRISQUE: 6.2<br/>NIQE: 0.42"]
+    
+    B_Score --> Winner["🏆 BEST:<br/>Lower scores<br/>= Better quality"]
+    C_Score --> Winner
+    D_Score --> Winner
+    
+    style A fill:#e1f5ff
+    style B fill:#ffe0b2
+    style C fill:#ffe0b2
+    style D fill:#c8e6c9
+    style Winner fill:#fff9c4
+```
+
+### #16 Robustness Across Degradation Types
+
+```mermaid
+graph TD
+    Input["Test Image"] --> Noisy["Add Gaussian Noise<br/>σ=25"]
+    Input --> Faded["Color Fade<br/>α=0.5"]
+    Input --> Fold["Add Fold Line<br/>Horizontal"]
+    Input --> LowC["Low Contrast<br/>α=0.4"]
+    
+    Noisy --> NoisyP["Restore<br/>BRISQUE 8.5"]
+    Faded --> FadedP["Restore<br/>BRISQUE 10.2"]
+    Fold --> FoldP["Restore<br/>BRISQUE 11.3"]
+    LowC --> LowCP["Restore<br/>BRISQUE 8.9"]
+    
+    NoisyP --> Calc["Calculate Recovery %<br/>30–50% = Good"]
+    FadedP --> Calc
+    FoldP --> Calc
+    LowCP --> Calc
+    
+    Calc --> Report["📊 Robustness Report"]
+    
+    style Input fill:#e1f5ff
+    style Report fill:#fff9c4
+```
+
+### #17 Runtime & Efficiency Analysis
+
+```mermaid
+graph LR
+    Tools["Benchmark.py<br/>Timing Analysis"] --> Tasks["NLM: 2.3s<br/>BRISQUE: 0.65s<br/>Fold: 0.14s<br/>Other: 0.21s"]
+    Tasks --> Total["⏱️ Total: 3.3s<br/>per 1200×1200 image"]
+    Total --> Optimize["🚀 Speed Options:<br/>--mode heuristic<br/>--no-display"]
+    
+    style Tools fill:#b3e5fc
+    style Total fill:#fff9c4
+    style Optimize fill:#c8e6c9
+```
+
+### #18 Mathematical Formulation
+
+**Pipeline Restoration Objective:**
+
+$$\text{Restore}(\mathbf{I}) = T_8 \circ T_7 \circ T_6 \circ T_5 \circ T_4 \circ T_3 \circ T_2 \circ T_1(\mathbf{I})$$
+
+**Key Equations:**
+- **Colorfulness:** $\mathbf{c} = \sqrt{\sigma^2(R-G) + \sigma^2(Y-B)}$
+- **Difficulty:** $D = 0.30N + 0.25C + 0.25B + 0.20F$  
+- **Adaptive WB Weight:** $\alpha = \text{clip}(-0.45\mathbf{c} + 0.75, 0.15, 0.70)$
+- **Dual-Domain Noise:** $\sigma = 0.6 \times \sigma_{\text{patch}} + 0.4 \times \sigma_{\text{freq}}$
+
+### #19 Clean Modular Architecture
+
+```mermaid
+graph TD
+    Input["📸 Input Image"]
+    
+    Input --> M0["🔧 Module 0: Adaptive Preprocessing<br/>Detect fading | Detect low-contrast"]
+    M0 --> M1["🌀 Module 1: Noise Estimation<br/>Patch + Frequency domain"]
+    M1 --> M2["🧹 Module 2: Denoiser<br/>NLM vs Median (noise-aware)"]
+    M2 --> M3["🎨 Module 3: White Balance<br/>Colorfulness-guided adaptive"]
+    M3 --> M4["✨ Module 4: Spot Removal<br/>Morphology + Telea inpaint"]
+    M4 --> M5["📐 Module 5: Fold Suppression<br/>Hough Transform + inpaint"]
+    M5 --> M6["🌗 Module 6: CLAHE Contrast<br/>Multi-scale blending"]
+    M6 --> M7["🎯 Module 7: Saturation Boost<br/>HSV S-channel scaling"]
+    M7 --> M8["✨ Module 8: Unsharp Sharpen<br/>Blur-adaptive amount"]
+    
+    M8 --> Output["✅ Restored Image"]
+    
+    style Input fill:#e1f5ff
+    style M0 fill:#fff3e0
+    style M1 fill:#f3e5f5
+    style M2 fill:#fce4ec
+    style M3 fill:#ffe0b2
+    style M4 fill:#c8e6c9
+    style M5 fill:#b2dfdb
+    style M6 fill:#e0f7fa
+    style M7 fill:#e8f5e9
+    style M8 fill:#f1f8e9
+    style Output fill:#fff9c4
+```
+
+**Module Properties:**
+- **Independence**: No backward dependencies
+- **Composability**: Strict sequential ordering
+- **Ablation-friendly**: Each module can be disabled
+- **Parameter-adaptive**: Difficulty → intensity scaling
+
+### #20 Strong Visual Demonstrations
+
+```mermaid
+graph LR
+    Input[" Input Image"] --> Steps["Step 1: Original<br/>Step 2: White Balance<br/>Step 3: Spot Removal<br/>Step 4: Fold Suppression<br/>Step 5: CLAHE<br/>Step 6: Restored"]
+    
+    Input --> Zoom["Zoomed Region<br/>Highlight texture<br/>recovery"]
+    
+    Steps --> PNG1["📊 {name}_steps.png<br/>6-panel grid"]
+    Zoom --> PNG2["📊 {name}_zoomed.png<br/>Detailed zoom"]
+    
+    PNG1 --> Pub["Publication-ready<br/>Before/After<br/>demonstration"]
+    PNG2 --> Pub
+    
+    style Input fill:#e1f5ff
+    style PNG1 fill:#c8e6c9
+    style PNG2 fill:#c8e6c9
+    style Pub fill:#fff9c4
+```
+
+### #21 Failure Case Analysis & Detection
+
+```mermaid
+graph TD
+    Image["📸 Restored Image"] --> Metrics["Compute Metrics:<br/>SSIM, PSNR, Blur Level<br/>Residual Noise"]
+    
+    Metrics --> Check1{"SSIM < 0.35?<br/>Structural<br/>damage"}
+    Check1 -->|YES| Fail1["⚠️ FAILURE:<br/>Structural damage"]
+    Check1 -->|NO| Check2{"PSNR < 15 dB?<br/>Large pixel<br/>deviation"}
+    
+    Check2 -->|YES| Fail2["⚠️ FAILURE:<br/>Low fidelity"]
+    Check2 -->|NO| Check3{"Blur < 30?<br/>Extreme blur<br/>detected"}
+    
+    Check3 -->|YES| Fail3["⚠️ FAILURE:<br/>Beyond recovery<br/>(Motion blur)"]
+    Check3 -->|NO| Check4{"Residual<br/>Noise > 15?<br/>Denoiser<br/>overwhelmed"}
+    
+    Check4 -->|YES| Fail4["⚠️ FAILURE:<br/>High noise after denoise"]
+    Check4 -->|NO| Success["✅ SUCCESS:<br/>Acceptable quality"]
+    
+    Fail1 --> Log["📄 Log to:<br/>failure_cases.txt<br/>with reason"]
+    Fail2 --> Log
+    Fail3 --> Log
+    Fail4 --> Log
+    Success --> Log
+    
+    Log --> Report["📊 Failure Rate Summary<br/>N failures / M total images"]
+    
+    style Image fill:#e1f5ff
+    style Fail1 fill:#ffcdd2
+    style Fail2 fill:#ffcdd2
+    style Fail3 fill:#ffcdd2
+    style Fail4 fill:#ffcdd2
+    style Success fill:#c8e6c9
+    style Report fill:#fff9c4
+```
+
+**Example Failure Detection Output:**
+
+```
+photo with blur.png:
+  Failure reason: Extreme blur (23.46) — beyond classical recovery
+  Explanation: Blur level 23.46 < threshold 30
+  Impact: Motion + atmospheric blur → high-frequency info lost
+  Remedy: Requires deep learning (UNet deblur) or manual intervention
+
+old_damaged.jpg:
+  Failure reason: Structural damage (SSIM=0.28)
+  Explanation: Pipeline modified structure negatively
+  Impact: PSNR 12.5 dB shows large pixel deviation
+  Remedy: Manual post-processing recommended
+```
 
 ---
 
