@@ -32,14 +32,13 @@ def is_grayscale(img):
             np.mean(np.abs(g.astype(np.int16) - r.astype(np.int16)))) / 3.0
     return diff < 10.0
 
-# In restoration.py — replace estimate_noise() with this:
 
 def estimate_noise_advanced(img):
     """
     Combines:
     1. Patch-based local variance (spatial domain)
     2. High-frequency energy via DFT (frequency domain)
-    Returns a single robust noise estimate.
+    Returns (patch_noise, freq_noise, combined) — three values.   ← FIX #12
     """
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
 
@@ -72,20 +71,22 @@ def estimate_noise_advanced(img):
 
     # Blend both estimates
     combined = 0.6 * patch_noise + 0.4 * freq_noise
-    return float(combined)
+    return float(patch_noise), float(freq_noise), float(combined)   # ← FIX #12
 
 
 # Backwards-compatible wrapper: keep `estimate_noise` name used elsewhere
 def estimate_noise(img):
     """Compatibility wrapper that calls the improved estimator."""
     try:
-        return float(estimate_noise_advanced(img))
+        _, _, combined = estimate_noise_advanced(img)   # ← FIX #12
+        return combined
     except Exception:
         # Fallback: simple residual-based estimator
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (3, 3), 0)
         residual = gray.astype(np.float32) - blur.astype(np.float32)
         return float(np.std(residual))
+
 
 def _local_patch_stats(img, patch_size=32, step=16):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
@@ -876,7 +877,11 @@ def analyze_and_restore(img, sat_scale=1.25, noise_thresh=10.0, contrast_thresh=
     info['ssim'] = ssim(orig_gray, res_gray)
     return restored, info
 
-# ── Improvement #10: Data-Driven Parameter Optimization ───────────────────────
+
+# ─────────────────────────────────────────────
+# IMPROVEMENT #10: DATA-DRIVEN PARAMETER OPTIMIZATION
+# ─────────────────────────────────────────────
+
 def optimize_parameters(img):
     """Grid search over key parameters using BRISQUE as objective.
     Tests combinations of wb_weight, sat_scale, clahe_clip.
@@ -899,12 +904,10 @@ def optimize_parameters(img):
         for sat in search_space['sat_scale']:
             for clip in search_space['clahe_clip']:
                 try:
-                    # Apply only the 3 steps being optimized (fast)
                     wb  = white_balance_grayworld(img)
                     res = cv2.addWeighted(img, 1.0 - wb_w, wb, wb_w, 0)
                     res = enhance_contrast_multiscale(res, clip_limit=clip)
 
-                    # Saturation boost
                     hsv = cv2.cvtColor(res, cv2.COLOR_BGR2HSV).astype(np.float32)
                     h, s, v = cv2.split(hsv)
                     s   = np.clip(s * sat, 0, 255).astype(np.uint8)
@@ -927,7 +930,10 @@ def optimize_parameters(img):
 
     return best_params, best_score
 
-# Add to restoration.py
+
+# ─────────────────────────────────────────────
+# IMPROVEMENT #11: DIFFICULTY-AWARE PROCESSING
+# ─────────────────────────────────────────────
 
 def difficulty_score(img):
     """
@@ -942,9 +948,9 @@ def difficulty_score(img):
     colorfulness  = colorfulness_metric(img)
 
     # Normalize each signal to [0, 1] — higher = worse
-    noise_norm    = np.clip(noise_lvl / 30.0,   0, 1)
-    contrast_norm = np.clip(1 - contrast / 60.0, 0, 1)   # low contrast = high difficulty
-    blur_norm     = np.clip(1 - blur_lvl / 500.0, 0, 1)  # low sharpness = high difficulty
+    noise_norm    = np.clip(noise_lvl / 30.0,    0, 1)
+    contrast_norm = np.clip(1 - contrast / 60.0, 0, 1)
+    blur_norm     = np.clip(1 - blur_lvl / 500.0, 0, 1)
     color_norm    = np.clip(1 - colorfulness / 50.0, 0, 1)
 
     score = 0.3*noise_norm + 0.25*contrast_norm + 0.25*blur_norm + 0.20*color_norm
