@@ -34,6 +34,15 @@ import cv2
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend — fixes MemoryError on large images
 import matplotlib.pyplot as plt
+
+# Try to import CNN noise model (optional — will fall back to heuristic if unavailable)
+try:
+    from noise_cnn import load_noise_model
+    CNN_AVAILABLE = True
+except Exception:
+    CNN_AVAILABLE = False
+    logging.warning('CNN model not available—will use heuristic approach')
+
 from restoration import (restore_image, analyze_and_restore,
                           run_ablation_study, print_ablation_table,
                           mse, psnr, ssim, colorfulness_metric, adaptive_wb_weight,
@@ -59,11 +68,11 @@ def compute_params_continuous(blur_level):
     sharpness = float(np.clip(blur_level / 500.0, 0.0, 1.0))
 
     params = dict(
-        nlm_h              = int(round(8 - 2 * sharpness)),   # 8 (blurry) → 6 (sharp)
+        nlm_h              = int(round(6 - 2 * sharpness)),   # 8 (blurry) → 6 (sharp)
         median_k           = 3,
-        clahe_clip         = round(1.5 - 0.4 * sharpness, 2), # 1.5 → 1.1
+        clahe_clip         = round(1.3 - 0.3 * sharpness, 2), # 1.5 → 1.1
         sat_scale_override = 1.5,
-        unsharp_amount     = round(0.5 - 0.2 * sharpness, 2), # 0.5 → 0.3
+        unsharp_amount     = round(0.35 - 0.15 * sharpness, 2), # 0.5 → 0.3
         spot_thresh        = 40,
         inpaint_radius     = 2,
         use_fold_suppression = True,
@@ -132,9 +141,65 @@ def intensity_from_difficulty(level):
     return presets[level]
 
 
+def restore_with_cnn(img, model_path=None):
+    """Restore image using CNN-based noise estimation + heuristic restoration.
+    
+    Falls back to heuristic if CNN unavailable.
+    """
+    if not CNN_AVAILABLE:
+        logging.warning('CNN not available — falling back to heuristic restoration')
+        return restore_image(img, nlm_h=6, median_k=3, clahe_clip=1.1,
+                           sat_scale_override=1.5, unsharp_amount=0.3)
+    
+    try:
+        model = load_noise_model(path=model_path)
+        if model is None:
+            logging.warning('Could not load CNN model — using heuristic')
+            return restore_image(img, nlm_h=6, median_k=3, clahe_clip=1.1,
+                               sat_scale_override=1.5, unsharp_amount=0.3)
+        
+        # Extract noise level prediction from CNN
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+        
+        # Prepare patches for CNN
+        patch_size = 64
+        patches = []
+        stride = 32
+        
+        for y in range(0, gray.shape[0] - patch_size, stride):
+            for x in range(0, gray.shape[1] - patch_size, stride):
+                patch = gray[y:y+patch_size, x:x+patch_size].astype(np.float32) / 255.0
+                patches.append(patch[np.newaxis, :, :, np.newaxis])
+        
+        if patches:
+            X = np.concatenate(patches, axis=0)
+            noise_predictions = model.predict(X, verbose=0)
+            avg_noise = float(np.mean(noise_predictions))
+        else:
+            avg_noise = 15.0  # Default
+        
+        logging.info('CNN-estimated noise level: %.2f', avg_noise)
+        
+        # Adapt parameters based on CNN noise estimate
+        nlm_h = int(np.clip(4 + (avg_noise / 50.0) * 6, 4, 10))
+        clahe_clip = float(np.clip(1.0 + (avg_noise / 50.0) * 0.5, 1.0, 1.5))
+        unsharp_amount = float(np.clip(0.2 + (avg_noise / 50.0) * 0.4, 0.2, 0.6))
+        
+        logging.info('CNN-adapted params: nlm_h=%d, clahe_clip=%.2f, unsharp=%.2f',
+                    nlm_h, clahe_clip, unsharp_amount)
+        
+        return restore_image(img, nlm_h=nlm_h, median_k=3, clahe_clip=clahe_clip,
+                           sat_scale_override=1.5, unsharp_amount=unsharp_amount)
+    
+    except Exception as e:
+        logging.warning('CNN restoration failed: %s — falling back to heuristic', str(e))
+        return restore_image(img, nlm_h=6, median_k=3, clahe_clip=1.1,
+                           sat_scale_override=1.5, unsharp_amount=0.3)
+
+
 # ── Main processing loop ───────────────────────────────────────────────────────
 def process_all(input_dir, output_dir, display=True, run_ablation=False,
-                debug=False, single_file=None):
+                debug=False, single_file=None, mode='legacy'):
     os.makedirs(output_dir, exist_ok=True)
 
     exts = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif')
@@ -202,37 +267,107 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False,
                 except Exception:
                     logging.exception('Failed to save debug overlay for %s', fname)
 
-            # ── Improvement #9: Continuous Adaptation ─────────────────────
-            mild_params = compute_params_continuous(blur_level)
-            sharpness   = float(np.clip(blur_level / 500.0, 0.0, 1.0))
+            # ── Choose pipeline mode ───────────────────────────────────────
+            if mode == 'cnn':
+                # CNN-based restoration
+                logging.info('Using CNN-based restoration')
+                mild_variant = restore_with_cnn(img_proc, model_path=os.path.join(
+                    os.path.dirname(__file__), 'noise_model.h5'))
+                
+                # Placeholder values for display
+                diff_score = opt_score = 0.0
+                diff_level = 'cnn'
+                mild_params = {'nlm_h': 6, 'clahe_clip': 1.1, 'unsharp_amount': 0.3,
+                              'sat_scale_override': 1.5}
+                opt_params = {'wb_weight': 0.5, 'sat_scale': 1.5, 'clahe_clip': 1.1}
+                patch_noise = freq_noise = combined_noise = 0.0
+                noise_decision = 'CNN'
+                
+            elif mode == 'hybrid':
+                # Apply both heuristic and CNN, blend results
+                logging.info('Using hybrid restoration (heuristic + CNN)')
+                
+                # Heuristic approach
+                mild_params = compute_params_continuous(blur_level)
+                heuristic_result = restore_image(img_proc, **mild_params)
+                
+                # CNN approach
+                cnn_result = restore_with_cnn(img_proc, model_path=os.path.join(
+                    os.path.dirname(__file__), 'noise_model.h5'))
+                
+                # Blend 50/50
+                mild_variant = cv2.addWeighted(heuristic_result, 0.5, cnn_result, 0.5, 0)
+                
+                diff_score = opt_score = 0.0
+                diff_level = 'hybrid'
+                opt_params = {'wb_weight': 0.5, 'sat_scale': 1.5, 'clahe_clip': 1.1}
+                patch_noise = freq_noise = combined_noise = 0.0
+                noise_decision = 'Hybrid'
+                
+            elif mode == 'heuristic':
+                # Simple heuristic approach (new default)
+                logging.info('Using heuristic restoration')
+                mild_params = compute_params_continuous(blur_level)
+                mild_variant = restore_image(img_proc, **mild_params)
+                
+                diff_score = opt_score = 0.0
+                diff_level = 'heuristic'
+                opt_params = {'wb_weight': 0.5, 'sat_scale': 1.5, 'clahe_clip': 1.1}
+                patch_noise = freq_noise = combined_noise = 0.0
+                noise_decision = '-'
+                
+            elif mode == 'difficulty':
+                diff_score, diff_level, n_norm, c_norm, b_norm, col_norm = difficulty_score(img_proc)
+                mild_params = intensity_from_difficulty(diff_level)
+                opt_params  = {
+                    'wb_weight':  info.get('wb_weight_used', 0.5),
+                    'sat_scale':  mild_params.get('sat_scale_override', 1.5),
+                    'clahe_clip': mild_params.get('clahe_clip', 1.2),
+                }
+                opt_score      = 0.0
+                diff_intensity = mild_params
+                patch_noise = freq_noise = combined_noise = 0.0
+                noise_decision = '-'
+                sharpness = float(np.clip(blur_level / 500.0, 0.0, 1.0))
+                logging.info('Difficulty: %.2f (%s)', diff_score, diff_level)
+                
+                # Run restoration
+                mild_variant = restore_image(img_proc, **mild_params)
 
-            # ── Improvement #10: Data-Driven Parameter Optimization ────────
-            opt_params, opt_score = optimize_parameters(img_proc)
-            logging.info('--- Data-Driven Optimization (#10) ---')
-            logging.info('  Best wb_weight  : %.2f', opt_params['wb_weight'])
-            logging.info('  Best sat_scale  : %.2f', opt_params['sat_scale'])
-            logging.info('  Best clahe_clip : %.2f', opt_params['clahe_clip'])
-            logging.info('  Best BRISQUE    : %.4f', opt_score)
+            else:  # 'legacy' mode
+                # ── Legacy: continuous adaptation + BRISQUE optimization ───
+                mild_params = compute_params_continuous(blur_level)
+                sharpness   = float(np.clip(blur_level / 500.0, 0.0, 1.0))
 
-            # Override with optimized values
-            mild_params['sat_scale_override'] = opt_params['sat_scale']
-            mild_params['clahe_clip']         = opt_params['clahe_clip']
+                try:
+                    opt_params, opt_score = optimize_parameters(img_proc)
+                    logging.info('--- Data-Driven Optimization (#10) ---')
+                    logging.info('  Best wb_weight  : %.2f', opt_params['wb_weight'])
+                    logging.info('  Best sat_scale  : %.2f', opt_params['sat_scale'])
+                    logging.info('  Best clahe_clip : %.2f', opt_params['clahe_clip'])
+                    logging.info('  Best BRISQUE    : %.4f', opt_score)
+                    # Only override clahe — keep sat_scale_override from continuous params
+                    mild_params['clahe_clip'] = opt_params['clahe_clip']
+                except Exception:
+                    opt_params = {
+                        'wb_weight':  info.get('wb_weight_used', 0.5),
+                        'sat_scale':  1.5,
+                        'clahe_clip': 1.2,
+                    }
+                    opt_score = 0.0
 
-            # ── Improvement #11: Difficulty-Aware Processing ───────────────
-            diff_score, diff_level, n_norm, c_norm, b_norm, col_norm = \
-                difficulty_score(img_proc)
-            diff_intensity = intensity_from_difficulty(diff_level)
+                # placeholders for display
+                diff_score     = 0.0
+                diff_level     = 'legacy'
+                diff_intensity = {
+                    'nlm_h':          mild_params.get('nlm_h', 6),
+                    'unsharp_amount': mild_params.get('unsharp_amount', 0.3),
+                }
+                
+                # Run restoration
+                mild_variant = restore_image(img_proc, **mild_params)
 
-            # Merge difficulty intensity into mild_params
-            # (only override keys that difficulty preset controls)
-            mild_params['nlm_h']              = diff_intensity['nlm_h']
-            mild_params['unsharp_amount']     = diff_intensity['unsharp_amount']
-            # sat and clahe already set by #10 — keep optimized values
-            logging.info('  Pipeline intensity → nlm_h=%d  clahe=%.2f  sat=%.2f  unsharp=%.2f',
-                         diff_intensity['nlm_h'],
-                         mild_params['clahe_clip'],
-                         mild_params['sat_scale_override'],
-                         diff_intensity['unsharp_amount'])
+
 
             # ── Improvement #12: Advanced Noise Estimation ────────────────
             try:
@@ -247,8 +382,6 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False,
                 patch_noise = freq_noise = combined_noise = 0.0
                 noise_decision = '-'
                 logging.warning('Advanced noise estimation failed — using defaults')
-
-            mild_variant = restore_image(img_proc, sat_scale=1.5, **mild_params)
 
             # Save restored image
             out_name = f'restored_{fname}'
@@ -380,7 +513,7 @@ def _save_comparison(img, mild_variant, cf, wb_w, out_path,
     orig_rgb = cv2.cvtColor(img_display,     cv2.COLOR_BGR2RGB)
     rest_rgb = cv2.cvtColor(variant_display, cv2.COLOR_BGR2RGB)
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 10), dpi=100)  # height 10 for all lines
+    fig, axes = plt.subplots(1, 2, figsize=(14, 10), dpi=100)
 
     axes[0].imshow(orig_rgb)
     axes[0].set_title('Original Image', fontsize=13)
@@ -519,6 +652,9 @@ if __name__ == '__main__':
                         help='Save debug overlay (green fold lines + red spots)')
     parser.add_argument('--file', '-f', default=None,
                         help='Process a single image file (full path)')
+    parser.add_argument('--mode', choices=['legacy', 'difficulty', 'heuristic', 'cnn', 'hybrid'], 
+                        default='heuristic',
+                        help='Processing mode: heuristic (default), cnn (trained model), hybrid (both), legacy (continuous+opt), difficulty (preset)')
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
@@ -537,4 +673,5 @@ if __name__ == '__main__':
                 display=(not args.no_display),
                 run_ablation=args.ablation,
                 debug=args.debug,
-                single_file=args.file)
+                single_file=args.file,
+                mode=args.mode)

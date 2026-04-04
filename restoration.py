@@ -18,6 +18,17 @@ import cv2
 import numpy as np
 import os
 
+# Optional lightweight CNN for noise estimation
+try:
+    from noise_cnn import load_noise_model, estimate_noise_cnn
+    _NOISE_CNN_AVAILABLE = True
+    _NOISE_MODEL = None
+except Exception:
+    load_noise_model = None
+    estimate_noise_cnn = None
+    _NOISE_CNN_AVAILABLE = False
+    _NOISE_MODEL = None
+
 
 # ─────────────────────────────────────────────
 # BASIC IMAGE ANALYSIS
@@ -71,7 +82,28 @@ def estimate_noise_advanced(img):
 
     # Blend both estimates
     combined = 0.6 * patch_noise + 0.4 * freq_noise
-    return float(patch_noise), float(freq_noise), float(combined)   # ← FIX #12
+
+    # If lightweight CNN available, try to refine the estimate (blend)
+    # NOTE: Disabled by default — CNN needs 50+ images + 20+ epochs to be effective
+    # With small training dataset, heuristic alone performs better.
+    # To re-enable: uncomment the block below
+    """
+    try:
+        if _NOISE_CNN_AVAILABLE and estimate_noise_cnn is not None:
+            global _NOISE_MODEL
+            if _NOISE_MODEL is None and load_noise_model is not None:
+                _NOISE_MODEL = load_noise_model(path=None)
+            if _NOISE_MODEL is not None:
+                cnn_val = estimate_noise_cnn(img, _NOISE_MODEL)
+                if cnn_val is not None:
+                    # blend CNN estimate and heuristic combined value
+                    combined = float(0.5 * combined + 0.5 * cnn_val)
+    except Exception:
+        # ignore CNN errors and keep heuristic combined
+        pass
+    """
+
+    return float(patch_noise), float(freq_noise), float(combined)
 
 
 # Backwards-compatible wrapper: keep `estimate_noise` name used elsewhere

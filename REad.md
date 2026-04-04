@@ -175,3 +175,17 @@ def estimate_noise_advanced(img):
     # Blend both estimates
     combined = 0.6 * patch_noise + 0.4 * freq_noise
     return float(combined)
+
+    This will:
+
+Load 5 images from dataset/old_images
+Generate synthetic noisy variants (10 noise levels × 3 samples = ~150 training images per real image)
+Train the CNN for 10 epochs (~5 min on CPU)
+Save the trained model to noise_model.h5
+The pipeline will then auto-load noise_model.h5 on next run. Would you like me to help install TensorFlow?
+
+Why the CNN didn't help:
+
+5 images is too small — CNN needs 50+ diverse degraded images to learn
+10 epochs insufficient — needs 20-50 epochs minimum for convergence
+Small dataset = poor generalization — CNN was overfitting to noise patterns, not learning real degradation
