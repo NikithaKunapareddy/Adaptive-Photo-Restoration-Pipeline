@@ -41,7 +41,6 @@ try:
     CNN_AVAILABLE = True
 except Exception:
     CNN_AVAILABLE = False
-    logging.warning('CNN model not available—will use heuristic approach')
 
 from restoration import (restore_image, analyze_and_restore,
                           run_ablation_study, print_ablation_table,
@@ -51,9 +50,8 @@ from restoration import (restore_image, analyze_and_restore,
                           classify_noise_type, entropy_metric, adaptive_wb_weight_entropy,
                           optimize_parameters,           # #10
                           estimate_noise_advanced,       # #12
-                          contrast_score, colorfulness_metric,
-                          detect_fading, adaptive_preprocess,  # #16
-                          estimate_noise)  # #21
+                          contrast_score,
+                          estimate_noise)                # #21
 
 
 # Maximum image side length for in-memory processing
@@ -70,11 +68,11 @@ def compute_params_continuous(blur_level):
     sharpness = float(np.clip(blur_level / 500.0, 0.0, 1.0))
 
     params = dict(
-        nlm_h              = int(round(6 - 2 * sharpness)),   # 8 (blurry) → 6 (sharp)
+        nlm_h              = int(round(8 - 2 * sharpness)),   # 8 (blurry) → 6 (sharp)
         median_k           = 3,
-        clahe_clip         = round(1.3 - 0.3 * sharpness, 2), # 1.5 → 1.1
+        clahe_clip         = round(1.5 - 0.4 * sharpness, 2), # 1.5 → 1.1
         sat_scale_override = 1.5,
-        unsharp_amount     = round(0.35 - 0.15 * sharpness, 2), # 0.5 → 0.3
+        unsharp_amount     = round(0.5 - 0.2 * sharpness, 2), # 0.5 → 0.3
         spot_thresh        = 40,
         inpaint_radius     = 2,
         use_fold_suppression = True,
@@ -97,23 +95,21 @@ def compute_params_continuous(blur_level):
 def difficulty_score(img):
     """Compute composite difficulty score from 4 signals.
 
-    Returns (score 0-1, level string).
+    Returns (score 0-1, level, noise_norm, contrast_norm, blur_norm, color_norm).
       0.00 - 0.33 → low    (mild degradation)
       0.33 - 0.66 → medium
       0.66 - 1.00 → severe
     """
-    from restoration import estimate_noise as _est_noise
-
-    noise_lvl    = _est_noise(img)
-    cont         = contrast_score(img)
-    blur_lvl, _  = detect_blur_level(img)
-    cf           = colorfulness_metric(img)
+    noise_lvl   = estimate_noise(img)
+    cont        = contrast_score(img)
+    blur_lvl, _ = detect_blur_level(img)
+    cf          = colorfulness_metric(img)
 
     # Normalize each to [0,1] — higher = worse / more degraded
-    noise_norm   = float(np.clip(noise_lvl  / 30.0,  0.0, 1.0))
-    contrast_norm= float(np.clip(1.0 - cont / 60.0,  0.0, 1.0))
-    blur_norm    = float(np.clip(1.0 - blur_lvl / 500.0, 0.0, 1.0))
-    color_norm   = float(np.clip(1.0 - cf / 50.0,    0.0, 1.0))
+    noise_norm    = float(np.clip(noise_lvl  / 30.0,       0.0, 1.0))
+    contrast_norm = float(np.clip(1.0 - cont / 60.0,       0.0, 1.0))
+    blur_norm     = float(np.clip(1.0 - blur_lvl / 500.0,  0.0, 1.0))
+    color_norm    = float(np.clip(1.0 - cf / 50.0,         0.0, 1.0))
 
     score = (0.30 * noise_norm +
              0.25 * contrast_norm +
@@ -143,93 +139,138 @@ def intensity_from_difficulty(level):
     return presets[level]
 
 
+# ── CNN helper ────────────────────────────────────────────────────────────────
 def restore_with_cnn(img, model_path=None):
     """Restore image using CNN-based noise estimation + heuristic restoration.
-    
     Falls back to heuristic if CNN unavailable.
     """
     if not CNN_AVAILABLE:
         logging.warning('CNN not available — falling back to heuristic restoration')
         return restore_image(img, nlm_h=6, median_k=3, clahe_clip=1.1,
-                           sat_scale_override=1.5, unsharp_amount=0.3)
-    
+                             sat_scale_override=1.5, unsharp_amount=0.3)
     try:
         model = load_noise_model(path=model_path)
         if model is None:
             logging.warning('Could not load CNN model — using heuristic')
             return restore_image(img, nlm_h=6, median_k=3, clahe_clip=1.1,
-                               sat_scale_override=1.5, unsharp_amount=0.3)
-        
-        # Extract noise level prediction from CNN
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
-        
-        # Prepare patches for CNN
+                                 sat_scale_override=1.5, unsharp_amount=0.3)
+
+        gray       = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
         patch_size = 64
-        patches = []
-        stride = 32
-        
+        stride     = 32
+        patches    = []
+
         for y in range(0, gray.shape[0] - patch_size, stride):
             for x in range(0, gray.shape[1] - patch_size, stride):
                 patch = gray[y:y+patch_size, x:x+patch_size].astype(np.float32) / 255.0
                 patches.append(patch[np.newaxis, :, :, np.newaxis])
-        
-        if patches:
-            X = np.concatenate(patches, axis=0)
-            noise_predictions = model.predict(X, verbose=0)
-            avg_noise = float(np.mean(noise_predictions))
-        else:
-            avg_noise = 15.0  # Default
-        
+
+        avg_noise = float(np.mean(model.predict(
+            np.concatenate(patches, axis=0), verbose=0))) if patches else 15.0
+
         logging.info('CNN-estimated noise level: %.2f', avg_noise)
-        
-        # Adapt parameters based on CNN noise estimate
-        nlm_h = int(np.clip(4 + (avg_noise / 50.0) * 6, 4, 10))
-        clahe_clip = float(np.clip(1.0 + (avg_noise / 50.0) * 0.5, 1.0, 1.5))
+
+        nlm_h          = int(np.clip(4 + (avg_noise / 50.0) * 6,   4,   10))
+        clahe_clip     = float(np.clip(1.0 + (avg_noise / 50.0) * 0.5, 1.0, 1.5))
         unsharp_amount = float(np.clip(0.2 + (avg_noise / 50.0) * 0.4, 0.2, 0.6))
-        
+
         logging.info('CNN-adapted params: nlm_h=%d, clahe_clip=%.2f, unsharp=%.2f',
-                    nlm_h, clahe_clip, unsharp_amount)
-        
+                     nlm_h, clahe_clip, unsharp_amount)
+
         return restore_image(img, nlm_h=nlm_h, median_k=3, clahe_clip=clahe_clip,
-                           sat_scale_override=1.5, unsharp_amount=unsharp_amount)
-    
+                             sat_scale_override=1.5, unsharp_amount=unsharp_amount)
     except Exception as e:
         logging.warning('CNN restoration failed: %s — falling back to heuristic', str(e))
         return restore_image(img, nlm_h=6, median_k=3, clahe_clip=1.1,
-                           sat_scale_override=1.5, unsharp_amount=0.3)
+                             sat_scale_override=1.5, unsharp_amount=0.3)
 
 
-# ── Improvement #21: Failure Case Analysis ─────────────────────────────────────
+# ── Improvement #21: Failure Case Analysis ────────────────────────────────────
 def detect_failure_case(info, mild_variant, img):
     """Detect if the restoration likely failed or produced poor results."""
     reasons = []
 
-    # Check SSIM drop — restoration made structure worse
     if info.get('ssim', 1.0) < 0.35:
         reasons.append(f"Very low SSIM ({info['ssim']:.3f}) — structural damage")
 
-    # Check PSNR — very low means large pixel difference
     if info.get('psnr', 99.0) < 15.0:
         reasons.append(f"Low PSNR ({info['psnr']:.2f} dB) — large pixel deviation")
 
-    # Check if image is too blurry to restore
     if info.get('blur_level', 999) < 30:
         reasons.append(f"Extreme blur ({info['blur_level']:.1f}) — beyond classical recovery")
 
-    # Check if still very noisy after restoration
     try:
         post_noise = estimate_noise(mild_variant)
         if post_noise > 15.0:
             reasons.append(f"High residual noise ({post_noise:.1f}) after denoising")
     except Exception:
-        pass  # Silently skip noise check if estimation fails
+        pass
 
     return reasons
 
 
+# ── Shared helper: compute #10, #11, #12 for any mode ─────────────────────────
+def _compute_all_diagnostics(img_proc, mild_params, blur_level):
+    """Always compute #10, #11, #12 values regardless of pipeline mode.
+    This ensures the comparison image box always shows real values.
+    Returns (opt_params, opt_score, diff_score, diff_level, diff_intensity,
+             patch_noise, freq_noise, combined_noise, noise_decision, sharpness)
+    """
+    sharpness = float(np.clip(blur_level / 500.0, 0.0, 1.0))
+
+    # ── #10: Data-Driven Optimization ─────────────────────────────────────
+    try:
+        opt_params, opt_score = optimize_parameters(img_proc)
+        logging.info('--- Data-Driven Optimization (#10) ---')
+        logging.info('  Best wb_weight  : %.2f', opt_params['wb_weight'])
+        logging.info('  Best sat_scale  : %.2f', opt_params['sat_scale'])
+        logging.info('  Best clahe_clip : %.2f', opt_params['clahe_clip'])
+        logging.info('  Best BRISQUE    : %.4f', opt_score)
+    except Exception:
+        opt_params = {'wb_weight': 0.5, 'sat_scale': 1.5, 'clahe_clip': 1.2}
+        opt_score  = 0.0
+        logging.warning('Optimization (#10) failed — using defaults')
+
+    # ── #11: Difficulty-Aware ──────────────────────────────────────────────
+    try:
+        diff_score, diff_level, n_norm, c_norm, b_norm, col_norm = \
+            difficulty_score(img_proc)
+        diff_intensity = intensity_from_difficulty(diff_level)
+    except Exception:
+        diff_score     = 0.0
+        diff_level     = 'unknown'
+        diff_intensity = {
+            'nlm_h':          mild_params.get('nlm_h', 6),
+            'clahe_clip':     mild_params.get('clahe_clip', 1.2),
+            'sat_scale_override': mild_params.get('sat_scale_override', 1.5),
+            'unsharp_amount': mild_params.get('unsharp_amount', 0.3),
+        }
+        logging.warning('Difficulty score (#11) failed — using defaults')
+
+    # ── #12: Advanced Noise Estimation ────────────────────────────────────
+    try:
+        patch_noise, freq_noise, combined_noise = estimate_noise_advanced(img_proc)
+        noise_decision = 'NLM Denoise' if combined_noise > 10.0 else 'Median Blur'
+        logging.info('--- Advanced Noise Estimation (#12) ---')
+        logging.info('  Patch-based noise : %.2f', patch_noise)
+        logging.info('  Frequency noise   : %.2f', freq_noise)
+        logging.info('  Combined estimate : %.2f', combined_noise)
+        logging.info('  Decision          : %s', noise_decision)
+    except Exception:
+        patch_noise = freq_noise = combined_noise = 0.0
+        noise_decision = '-'
+        logging.warning('Noise estimation (#12) failed — using defaults')
+
+    return (opt_params, opt_score,
+            diff_score, diff_level, diff_intensity,
+            patch_noise, freq_noise, combined_noise, noise_decision,
+            sharpness)
+
+
 # ── Main processing loop ───────────────────────────────────────────────────────
 def process_all(input_dir, output_dir, display=True, run_ablation=False,
-                debug=False, single_file=None, mode='legacy', run_benchmark=False):
+                debug=False, single_file=None, mode='heuristic',
+                run_benchmark=False):
     os.makedirs(output_dir, exist_ok=True)
 
     exts = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif')
@@ -291,133 +332,66 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False,
                 try:
                     folds = detect_fold_lines(img_proc)
                     spots_mask, _ = detect_spots_mask(img_proc)
-                    debug_prefix = os.path.join(output_dir, f'debug_{os.path.splitext(fname)[0]}')
+                    debug_prefix = os.path.join(
+                        output_dir, f'debug_{os.path.splitext(fname)[0]}')
                     save_debug_overlays(img_proc, folds, spots_mask, debug_prefix)
-                    logging.info('Saved cleaned debug overlays for: %s', debug_prefix)
+                    logging.info('Saved debug overlays for: %s', debug_prefix)
                 except Exception:
                     logging.exception('Failed to save debug overlay for %s', fname)
 
-            # ── Choose pipeline mode ───────────────────────────────────────
+            # ── Choose pipeline mode & run restoration ─────────────────────
             if mode == 'cnn':
-                # CNN-based restoration
                 logging.info('Using CNN-based restoration')
+                mild_params = {'nlm_h': 6, 'clahe_clip': 1.1,
+                               'unsharp_amount': 0.3, 'sat_scale_override': 1.5}
                 mild_variant = restore_with_cnn(img_proc, model_path=os.path.join(
                     os.path.dirname(__file__), 'noise_model.h5'))
-                
-                # Placeholder values for display
-                sharpness = float(np.clip(blur_level / 500.0, 0.0, 1.0))
-                diff_score = opt_score = 0.0
-                diff_level = 'cnn'
-                diff_intensity = {'nlm_h': 6, 'unsharp_amount': 0.3}
-                mild_params = {'nlm_h': 6, 'clahe_clip': 1.1, 'unsharp_amount': 0.3,
-                              'sat_scale_override': 1.5}
-                opt_params = {'wb_weight': 0.5, 'sat_scale': 1.5, 'clahe_clip': 1.1}
-                patch_noise = freq_noise = combined_noise = 0.0
-                noise_decision = 'CNN'
-                
+
             elif mode == 'hybrid':
-                # Apply both heuristic and CNN, blend results
                 logging.info('Using hybrid restoration (heuristic + CNN)')
-                
-                # Heuristic approach
-                mild_params = compute_params_continuous(blur_level)
+                mild_params      = compute_params_continuous(blur_level)
                 heuristic_result = restore_image(img_proc, **mild_params)
-                
-                # CNN approach
-                cnn_result = restore_with_cnn(img_proc, model_path=os.path.join(
+                cnn_result       = restore_with_cnn(img_proc, model_path=os.path.join(
                     os.path.dirname(__file__), 'noise_model.h5'))
-                
-                # Blend 50/50
-                mild_variant = cv2.addWeighted(heuristic_result, 0.5, cnn_result, 0.5, 0)
-                
-                sharpness = float(np.clip(blur_level / 500.0, 0.0, 1.0))
-                diff_score = opt_score = 0.0
-                diff_level = 'hybrid'
-                diff_intensity = {'nlm_h': mild_params.get('nlm_h', 6), 'unsharp_amount': mild_params.get('unsharp_amount', 0.3)}
-                opt_params = {'wb_weight': 0.5, 'sat_scale': 1.5, 'clahe_clip': 1.1}
-                patch_noise = freq_noise = combined_noise = 0.0
-                noise_decision = 'Hybrid'
-                
-            elif mode == 'heuristic':
-                # Simple heuristic approach (new default)
-                logging.info('Using heuristic restoration')
-                mild_params = compute_params_continuous(blur_level)
-                mild_variant = restore_image(img_proc, **mild_params)
-                
-                sharpness = float(np.clip(blur_level / 500.0, 0.0, 1.0))
-                diff_score = opt_score = 0.0
-                diff_level = 'heuristic'
-                diff_intensity = {'nlm_h': mild_params.get('nlm_h', 6), 'unsharp_amount': mild_params.get('unsharp_amount', 0.3)}
-                opt_params = {'wb_weight': 0.5, 'sat_scale': 1.5, 'clahe_clip': 1.1}
-                patch_noise = freq_noise = combined_noise = 0.0
-                noise_decision = '-'
-                
+                mild_variant     = cv2.addWeighted(heuristic_result, 0.5,
+                                                   cnn_result, 0.5, 0)
+
             elif mode == 'difficulty':
-                diff_score, diff_level, n_norm, c_norm, b_norm, col_norm = difficulty_score(img_proc)
-                mild_params = intensity_from_difficulty(diff_level)
-                opt_params  = {
-                    'wb_weight':  info.get('wb_weight_used', 0.5),
-                    'sat_scale':  mild_params.get('sat_scale_override', 1.5),
-                    'clahe_clip': mild_params.get('clahe_clip', 1.2),
-                }
-                opt_score      = 0.0
-                diff_intensity = mild_params
-                patch_noise = freq_noise = combined_noise = 0.0
-                noise_decision = '-'
-                sharpness = float(np.clip(blur_level / 500.0, 0.0, 1.0))
-                logging.info('Difficulty: %.2f (%s)', diff_score, diff_level)
-                
-                # Run restoration
+                logging.info('Using difficulty-aware restoration')
+                # Compute difficulty first, use its intensity as params
+                d_score, d_level, *_ = difficulty_score(img_proc)
+                mild_params  = intensity_from_difficulty(d_level)
+                mild_params.setdefault('median_k',           3)
+                mild_params.setdefault('spot_thresh',        40)
+                mild_params.setdefault('inpaint_radius',     2)
+                mild_params.setdefault('use_fold_suppression', True)
+                mild_params.setdefault('use_multiscale_clahe', True)
+                mild_params.setdefault('use_deblur',           True)
+                mild_params.setdefault('use_adaptive_sharpen', True)
                 mild_variant = restore_image(img_proc, **mild_params)
 
-            else:  # 'legacy' mode
-                # ── Legacy: continuous adaptation + BRISQUE optimization ───
+            elif mode == 'legacy':
+                logging.info('Using legacy (continuous + BRISQUE) restoration')
                 mild_params = compute_params_continuous(blur_level)
-                sharpness   = float(np.clip(blur_level / 500.0, 0.0, 1.0))
-
                 try:
-                    opt_params, opt_score = optimize_parameters(img_proc)
-                    logging.info('--- Data-Driven Optimization (#10) ---')
-                    logging.info('  Best wb_weight  : %.2f', opt_params['wb_weight'])
-                    logging.info('  Best sat_scale  : %.2f', opt_params['sat_scale'])
-                    logging.info('  Best clahe_clip : %.2f', opt_params['clahe_clip'])
-                    logging.info('  Best BRISQUE    : %.4f', opt_score)
-                    # Only override clahe — keep sat_scale_override from continuous params
-                    mild_params['clahe_clip'] = opt_params['clahe_clip']
+                    opt_p, _ = optimize_parameters(img_proc)
+                    mild_params['clahe_clip'] = opt_p['clahe_clip']
                 except Exception:
-                    opt_params = {
-                        'wb_weight':  info.get('wb_weight_used', 0.5),
-                        'sat_scale':  1.5,
-                        'clahe_clip': 1.2,
-                    }
-                    opt_score = 0.0
-
-                # placeholders for display
-                diff_score     = 0.0
-                diff_level     = 'legacy'
-                diff_intensity = {
-                    'nlm_h':          mild_params.get('nlm_h', 6),
-                    'unsharp_amount': mild_params.get('unsharp_amount', 0.3),
-                }
-                
-                # Run restoration
+                    pass
                 mild_variant = restore_image(img_proc, **mild_params)
 
+            else:  # 'heuristic' — default
+                logging.info('Using heuristic restoration')
+                mild_params  = compute_params_continuous(blur_level)
+                mild_variant = restore_image(img_proc, **mild_params)
 
-
-            # ── Improvement #12: Advanced Noise Estimation ────────────────
-            try:
-                patch_noise, freq_noise, combined_noise = estimate_noise_advanced(img_proc)
-                noise_decision = 'NLM Denoise' if combined_noise > 10.0 else 'Median Blur'
-                logging.info('--- Advanced Noise Estimation (#12) ---')
-                logging.info('  Patch-based noise : %.2f', patch_noise)
-                logging.info('  Frequency noise   : %.2f', freq_noise)
-                logging.info('  Combined estimate : %.2f', combined_noise)
-                logging.info('  Decision          : %s', noise_decision)
-            except Exception:
-                patch_noise = freq_noise = combined_noise = 0.0
-                noise_decision = '-'
-                logging.warning('Advanced noise estimation failed — using defaults')
+            # ── Always compute #10, #11, #12 diagnostics for display ───────
+            # This runs AFTER restoration so it never blocks the pipeline.
+            # All modes get real values in the comparison box.
+            (opt_params, opt_score,
+             diff_score, diff_level, diff_intensity,
+             patch_noise, freq_noise, combined_noise, noise_decision,
+             sharpness) = _compute_all_diagnostics(img_proc, mild_params, blur_level)
 
             # Save restored image
             out_name = f'restored_{fname}'
@@ -438,13 +412,7 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False,
             except Exception:
                 logging.exception('Failed to compute metrics')
 
-            # Log results
-            # Detect degradation type (#16)
-            try:
-                _, degradation_detected = adaptive_preprocess(img_proc)
-            except Exception:
-                degradation_detected = 'unknown'
-            
+            # Build condition string
             cond = 'Noisy' if info.get('is_noisy') else 'Clean'
             if info.get('is_low_contrast'):
                 cond += ' + Low-Contrast'
@@ -452,10 +420,6 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False,
                 cond += ' + Grayscale'
             if info.get('is_blurred'):
                 cond += ' + Blurred'
-            
-            # Add degradation type if detected
-            if degradation_detected != 'normal' and degradation_detected != 'unknown':
-                cond += f' + [{degradation_detected.upper()}]'
 
             cf       = info.get('colorfulness', 0.0)
             wb_w     = info.get('wb_weight_used', 0.0)
@@ -472,13 +436,12 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False,
             logging.info('MSE: %.2f,  PSNR: %.2f dB,  SSIM: %.4f',
                          info.get('mse', 0), info.get('psnr', 0), info.get('ssim', 0))
 
-            # ── Improvement #21: Failure Case Analysis ──────────────────────────
+            # ── Improvement #21: Failure Case Analysis ─────────────────────
             failure_reasons = detect_failure_case(info, mild_variant, img_proc)
             if failure_reasons:
                 logging.warning('⚠ FAILURE CASE DETECTED for %s:', fname)
                 for r in failure_reasons:
                     logging.warning('   → %s', r)
-                # Save to a separate failure log
                 fail_log = os.path.join(output_dir, 'failure_cases.txt')
                 with open(fail_log, 'a') as f:
                     f.write(f'\n{fname}:\n')
@@ -501,16 +464,15 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False,
                 _save_ablation_grid(ablation_results, ablation_out)
                 logging.info('Ablation grid saved to: %s', ablation_out)
 
-            # ── Improvement #15: Benchmark Against Classical Methods ───────
+            # ── Benchmark vs Classical Methods (#15) ───────────────────────
             if run_benchmark:
                 logging.info('Running benchmark comparison for %s ...', fname)
                 try:
                     from restoration import run_benchmark_comparison, print_benchmark_table
                     bench_results = run_benchmark_comparison(img_proc)
                     print_benchmark_table(bench_results)
-                    logging.info('Benchmark comparison completed for: %s', fname)
                 except Exception:
-                    logging.exception('Benchmark comparison failed for %s', fname)
+                    logging.exception('Benchmark failed for %s', fname)
 
             # ── Save comparison image ──────────────────────────────────────
             if display:
@@ -539,14 +501,14 @@ def process_all(input_dir, output_dir, display=True, run_ablation=False,
                         diff_score=diff_score,                         # #11
                         diff_level=diff_level,                         # #11
                         diff_nlm=diff_intensity['nlm_h'],              # #11
-                        diff_clahe=mild_params['clahe_clip'],          # #11
-                        diff_sat=mild_params['sat_scale_override'],    # #11
+                        diff_clahe=diff_intensity['clahe_clip'],       # #11
+                        diff_sat=diff_intensity['sat_scale_override'], # #11
                         diff_unsharp=diff_intensity['unsharp_amount'], # #11
                         patch_noise=patch_noise,                       # #12
                         freq_noise=freq_noise,                         # #12
                         combined_noise=combined_noise,                 # #12
                         noise_decision=noise_decision,                 # #12
-                        degradation_detected=degradation_detected)     # #16
+                    )
                     logging.info('Comparison image saved: comparison_%s', fname)
                 except Exception:
                     logging.exception('Error saving comparison for %s', fname)
@@ -569,16 +531,17 @@ def _save_comparison(img, mild_variant, cf, wb_w, out_path,
                      diff_nlm=None, diff_clahe=None,                   # #11
                      diff_sat=None, diff_unsharp=None,                 # #11
                      patch_noise=None, freq_noise=None,                # #12
-                     combined_noise=None, noise_decision=None,         # #12
-                     degradation_detected=None):                       # #16
+                     combined_noise=None, noise_decision=None):        # #12
     """Save side-by-side original vs restored comparison image with diagnostics."""
 
     max_width = 1200
     h, w = img.shape[:2]
     if w > max_width:
         scale           = max_width / w
-        img_display     = cv2.resize(img,          (int(w*scale), int(h*scale)), interpolation=cv2.INTER_AREA)
-        variant_display = cv2.resize(mild_variant, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_AREA)
+        img_display     = cv2.resize(img,          (int(w*scale), int(h*scale)),
+                                     interpolation=cv2.INTER_AREA)
+        variant_display = cv2.resize(mild_variant, (int(w*scale), int(h*scale)),
+                                     interpolation=cv2.INTER_AREA)
     else:
         img_display     = img
         variant_display = mild_variant
@@ -621,21 +584,18 @@ def _save_comparison(img, mild_variant, cf, wb_w, out_path,
     oscore_str = f"{opt_score:.2f}"           if isinstance(opt_score,          (int, float)) else '-'
 
     # ── #11 strings ───────────────────────────────────────────────────────
-    dscore_str  = f"{diff_score:.2f}"         if isinstance(diff_score,         (int, float)) else '-'
-    dlevel_str  = str(diff_level)             if diff_level  is not None                      else '-'
-    dnlm_str    = str(diff_nlm)               if diff_nlm    is not None                      else '-'
-    dclahe_str  = f"{diff_clahe:.2f}"         if isinstance(diff_clahe,         (int, float)) else '-'
-    dsat_str    = f"{diff_sat:.2f}"           if isinstance(diff_sat,           (int, float)) else '-'
-    dunsharp_str= f"{diff_unsharp:.2f}"       if isinstance(diff_unsharp,       (int, float)) else '-'
+    dscore_str   = f"{diff_score:.2f}"        if isinstance(diff_score,         (int, float)) else '-'
+    dlevel_str   = str(diff_level)            if diff_level  is not None                      else '-'
+    dnlm_str     = str(diff_nlm)              if diff_nlm    is not None                      else '-'
+    dclahe_str   = f"{diff_clahe:.2f}"        if isinstance(diff_clahe,         (int, float)) else '-'
+    dsat_str     = f"{diff_sat:.2f}"          if isinstance(diff_sat,           (int, float)) else '-'
+    dunsharp_str = f"{diff_unsharp:.2f}"      if isinstance(diff_unsharp,       (int, float)) else '-'
 
     # ── #12 strings ───────────────────────────────────────────────────────
     pnoise_str  = f"{patch_noise:.2f}"        if isinstance(patch_noise,        (int, float)) else '-'
     fnoise_str  = f"{freq_noise:.2f}"         if isinstance(freq_noise,         (int, float)) else '-'
     cnoise_str  = f"{combined_noise:.2f}"     if isinstance(combined_noise,     (int, float)) else '-'
     ndec_str    = str(noise_decision)         if noise_decision is not None                   else '-'
-    
-    # ── #16 strings ───────────────────────────────────────────────────────
-    deg_str     = str(degradation_detected).upper() if degradation_detected and degradation_detected != 'normal' else '-'
 
     # ── Build box text ─────────────────────────────────────────────────────
     box_text = '\n'.join([
@@ -652,6 +612,7 @@ def _save_comparison(img, mild_variant, cf, wb_w, out_path,
         f"Best  wb={owb_str}   sat={osat_str}   clahe={oclahe_str}   BRISQUE={oscore_str}",
         f"──────── Difficulty-Aware (#11) ──────────────",
         f"Difficulty Score   : {dscore_str}  \u2192  Level: {dlevel_str}",
+        f"Intensity  nlm_h={dnlm_str}   clahe={dclahe_str}   sat={dsat_str}   unsharp={dunsharp_str}",
         f"──────── Noise Estimation (#12) ──────────────",
         f"Patch={pnoise_str}   Freq={fnoise_str}   Combined={cnoise_str}   \u2192 {ndec_str}",
     ])
@@ -700,7 +661,8 @@ def _save_ablation_grid(ablation_results, out_path):
     for i, (key, (img_v, b, nq)) in enumerate(variants):
         small = downscale(img_v)
         axes[i].imshow(cv2.cvtColor(small, cv2.COLOR_BGR2RGB))
-        axes[i].set_title(f'{labels.get(key, key)}\nBRISQUE={b:.2f}  NIQE={nq:.2f}', fontsize=9)
+        axes[i].set_title(f'{labels.get(key, key)}\nBRISQUE={b:.2f}  NIQE={nq:.2f}',
+                          fontsize=9)
         axes[i].axis('off')
 
     for j in range(i + 1, len(axes)):
@@ -726,12 +688,14 @@ if __name__ == '__main__':
     parser.add_argument('--debug',      action='store_true',
                         help='Save debug overlay (green fold lines + red spots)')
     parser.add_argument('--benchmark',  action='store_true',
-                        help='Run quality benchmark comparison vs classical methods')
+                        help='Run quality benchmark comparison vs classical methods (#15)')
     parser.add_argument('--file', '-f', default=None,
                         help='Process a single image file (full path)')
-    parser.add_argument('--mode', choices=['legacy', 'difficulty', 'heuristic', 'cnn', 'hybrid'], 
+    parser.add_argument('--mode',
+                        choices=['heuristic', 'difficulty', 'legacy', 'cnn', 'hybrid'],
                         default='heuristic',
-                        help='Processing mode: heuristic (default), cnn (trained model), hybrid (both), legacy (continuous+opt), difficulty (preset)')
+                        help='Processing mode: heuristic (default), difficulty (#11 preset), '
+                             'legacy (#9+#10), cnn (trained model), hybrid (heuristic+CNN)')
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
